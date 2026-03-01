@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 
 interface Campaign {
   id: string;
@@ -9,6 +10,7 @@ interface Campaign {
   status: string;
   offerUrl: string;
   offerId: string;
+  adSpend?: number | null;
   createdAt: string;
   variants: { id: string; name: string; slug: string; trafficWeight: number }[];
 }
@@ -21,6 +23,8 @@ interface StatsData {
     conversions: number;
     conversionRate: number;
     totalPayout: number;
+    adSpend?: number | null;
+    roi?: number | null;
   };
   variants: {
     id: string;
@@ -38,7 +42,12 @@ interface StatsData {
   countries: { country: string; clicks: number; pct: number }[];
   devices: { device: string; clicks: number; pct: number }[];
   daily: { date: string; clicks: number; conversions: number }[];
-  significance: { isSignificant: boolean; confidence: number; winner: string | null };
+  significance: { isSignificant: boolean; confidence: number; winner: string | null; leader: string | null };
+}
+
+interface LanderRow {
+  landingPage: string;
+  weight: number;
 }
 
 const BASE_URL =
@@ -61,6 +70,8 @@ function Bar({ pct, color = 'bg-blue-500' }: { pct: number; color?: string }) {
   );
 }
 
+const VARIANT_COLORS = ['text-blue-400', 'text-purple-400', 'text-teal-400', 'text-orange-400', 'text-pink-400'];
+
 export default function AdminPage() {
   const [landingPages, setLandingPages] = useState<string[]>([]);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
@@ -77,19 +88,12 @@ export default function AdminPage() {
 
   // Edit split state
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editSplit, setEditSplit] = useState(50);
+  const [editWeights, setEditWeights] = useState<{ id: string; slug: string; weight: number }[]>([]);
   const [editSaving, setEditSaving] = useState(false);
 
-  const [form, setForm] = useState({
-    name: '',
-    slug: '',
-    offerUrl: '',
-    offerId: '',
-    variantA: '',
-    variantB: '',
-    splitA: 50,
-    splitB: 50,
-  });
+  // Form state
+  const [formBase, setFormBase] = useState({ name: '', slug: '', offerUrl: '', offerId: '', adSpend: '' });
+  const [landers, setLanders] = useState<LanderRow[]>([{ landingPage: '', weight: 100 }]);
 
   useEffect(() => {
     Promise.all([
@@ -102,50 +106,99 @@ export default function AdminPage() {
     });
   }, []);
 
-  function handleSplitA(val: number) {
-    setForm((f) => ({ ...f, splitA: val, splitB: 100 - val }));
-  }
-
   function slugify(str: string) {
-    return str
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '');
+    return str.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
   }
 
   function handleNameChange(val: string) {
-    setForm((f) => ({ ...f, name: val, slug: slugify(val) }));
+    setFormBase((f) => ({ ...f, name: val, slug: slugify(val) }));
   }
+
+  // ── Lander management ────────────────────────────────────────────────────
+
+  function addLander() {
+    if (landers.length >= 5) return;
+    const n = landers.length + 1;
+    const equal = Math.floor(100 / n);
+    const remainder = 100 - equal * n;
+    setLanders((prev) => [
+      ...prev.map((l, i) => ({ ...l, weight: equal + (i === 0 ? remainder : 0) })),
+      { landingPage: '', weight: equal },
+    ]);
+  }
+
+  function removeLander(idx: number) {
+    if (landers.length <= 1) return;
+    const updated = landers.filter((_, i) => i !== idx);
+    // redistribute weights equally after removal
+    autoSplit(updated);
+  }
+
+  function autoSplit(rows?: LanderRow[]) {
+    const base = rows ?? landers;
+    const n = base.length;
+    const equal = Math.floor(100 / n);
+    const remainder = 100 - equal * n;
+    setLanders(base.map((l, i) => ({ ...l, weight: equal + (i === 0 ? remainder : 0) })));
+  }
+
+  function setLanderPage(idx: number, page: string) {
+    setLanders((prev) => prev.map((l, i) => (i === idx ? { ...l, landingPage: page } : l)));
+  }
+
+  function setLanderWeight(idx: number, val: number) {
+    setLanders((prev) => prev.map((l, i) => (i === idx ? { ...l, weight: val } : l)));
+  }
+
+  const totalWeight = landers.reduce((s, l) => s + (l.weight || 0), 0);
+  const weightOk = Math.abs(totalWeight - 100) <= 1;
+
+  // ── Create campaign ───────────────────────────────────────────────────────
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     setError('');
-    if (!form.variantA || !form.variantB) {
-      setError('Please select both Variant A and Variant B.');
+    if (!weightOk) {
+      setError(`Traffic weights must sum to 100 (currently ${totalWeight}%).`);
       return;
     }
-    if (form.variantA === form.variantB) {
-      setError('Variant A and Variant B must be different landing pages.');
+    for (const l of landers) {
+      if (!l.landingPage) {
+        setError('Please select a landing page for each lander.');
+        return;
+      }
+    }
+    const slugs = landers.map((l) => l.landingPage);
+    if (new Set(slugs).size !== slugs.length) {
+      setError('Each lander must use a different landing page.');
       return;
     }
+
     setCreating(true);
     const res = await fetch('/api/admin/campaigns', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(form),
+      body: JSON.stringify({
+        ...formBase,
+        adSpend: formBase.adSpend ? parseFloat(formBase.adSpend) : null,
+        landers,
+      }),
     });
     const data = await res.json();
     setCreating(false);
     if (data.success) {
-      const link = `${BASE_URL}/api/track?campaign=${form.slug}`;
+      const link = `${BASE_URL}/api/track?campaign=${formBase.slug}`;
       setGeneratedLink(link);
       const campRes = await fetch('/api/admin/campaigns').then((r) => r.json());
       setCampaigns(campRes.campaigns || []);
-      setForm({ name: '', slug: '', offerUrl: '', offerId: '', variantA: '', variantB: '', splitA: 50, splitB: 50 });
+      setFormBase({ name: '', slug: '', offerUrl: '', offerId: '', adSpend: '' });
+      setLanders([{ landingPage: '', weight: 100 }]);
     } else {
       setError(JSON.stringify(data.error));
     }
   }
+
+  // ── Delete ────────────────────────────────────────────────────────────────
 
   async function handleDelete(id: string, name: string) {
     if (!confirm(`Delete campaign "${name}"? This cannot be undone.`)) return;
@@ -153,6 +206,8 @@ export default function AdminPage() {
     setCampaigns((prev) => prev.filter((c) => c.id !== id));
     if (expandedId === id) setExpandedId(null);
   }
+
+  // ── Stats ─────────────────────────────────────────────────────────────────
 
   async function loadStats(campaignId: string, days: number) {
     setStatsLoading((prev) => ({ ...prev, [campaignId]: true }));
@@ -180,38 +235,42 @@ export default function AdminPage() {
     loadStats(campaignId, days);
   }
 
+  // ── Edit split ────────────────────────────────────────────────────────────
+
   function openEditSplit(camp: Campaign) {
-    const varA = camp.variants[0];
-    setEditSplit(varA?.trafficWeight ?? 50);
+    setEditWeights(camp.variants.map((v) => ({ id: v.id, slug: v.slug, weight: v.trafficWeight })));
     setEditingId(camp.id);
   }
 
+  function setEditWeight(idx: number, val: number) {
+    setEditWeights((prev) => prev.map((w, i) => (i === idx ? { ...w, weight: val } : w)));
+  }
+
+  function autoSplitEdit() {
+    const n = editWeights.length;
+    const equal = Math.floor(100 / n);
+    const remainder = 100 - equal * n;
+    setEditWeights((prev) => prev.map((w, i) => ({ ...w, weight: equal + (i === 0 ? remainder : 0) })));
+  }
+
+  const editTotal = editWeights.reduce((s, w) => s + (w.weight || 0), 0);
+  const editOk = Math.abs(editTotal - 100) <= 1;
+
   async function handleEditSave(camp: Campaign) {
-    if (camp.variants.length < 2) return;
+    if (!editOk) return;
     setEditSaving(true);
     try {
       const res = await fetch('/api/admin/campaigns', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          variants: [
-            { id: camp.variants[0].id, trafficWeight: editSplit },
-            { id: camp.variants[1].id, trafficWeight: 100 - editSplit },
-          ],
-        }),
+        body: JSON.stringify({ variants: editWeights.map((w) => ({ id: w.id, trafficWeight: w.weight })) }),
       });
       const data = await res.json();
       if (data.success) {
         setCampaigns((prev) =>
           prev.map((c) =>
             c.id === camp.id
-              ? {
-                  ...c,
-                  variants: c.variants.map((v, i) => ({
-                    ...v,
-                    trafficWeight: i === 0 ? editSplit : 100 - editSplit,
-                  })),
-                }
+              ? { ...c, variants: c.variants.map((v, i) => ({ ...v, trafficWeight: editWeights[i]?.weight ?? v.trafficWeight })) }
               : c
           )
         );
@@ -248,12 +307,20 @@ export default function AdminPage() {
             <h1 className="text-3xl font-bold text-white">AB Test Dashboard</h1>
             <p className="text-gray-400 mt-1">Create campaigns, select landing pages, get your tracking link.</p>
           </div>
-          <button
-            onClick={handleLogout}
-            className="text-sm text-gray-400 hover:text-white border border-gray-700 hover:border-gray-500 px-3 py-1.5 rounded-lg transition-colors mt-1"
-          >
-            Log out
-          </button>
+          <div className="flex items-center gap-2 mt-1">
+            <Link
+              href="/admin/analytics"
+              className="text-sm text-blue-400 hover:text-blue-300 border border-blue-800 hover:border-blue-600 px-3 py-1.5 rounded-lg transition-colors"
+            >
+              Analytics
+            </Link>
+            <button
+              onClick={handleLogout}
+              className="text-sm text-gray-400 hover:text-white border border-gray-700 hover:border-gray-500 px-3 py-1.5 rounded-lg transition-colors"
+            >
+              Log out
+            </button>
+          </div>
         </div>
 
         {/* Create Campaign Form */}
@@ -268,7 +335,7 @@ export default function AdminPage() {
                   type="text"
                   required
                   placeholder="Swiss Sports Q2"
-                  value={form.name}
+                  value={formBase.name}
                   onChange={(e) => handleNameChange(e.target.value)}
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
                 />
@@ -278,8 +345,8 @@ export default function AdminPage() {
                 <input
                   type="text"
                   required
-                  value={form.slug}
-                  onChange={(e) => setForm((f) => ({ ...f, slug: e.target.value }))}
+                  value={formBase.slug}
+                  onChange={(e) => setFormBase((f) => ({ ...f, slug: e.target.value }))}
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white focus:outline-none focus:border-blue-500"
                 />
               </div>
@@ -292,8 +359,8 @@ export default function AdminPage() {
                   type="url"
                   required
                   placeholder="https://your-network.com/click?affid=123"
-                  value={form.offerUrl}
-                  onChange={(e) => setForm((f) => ({ ...f, offerUrl: e.target.value }))}
+                  value={formBase.offerUrl}
+                  onChange={(e) => setFormBase((f) => ({ ...f, offerUrl: e.target.value }))}
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
                 />
               </div>
@@ -302,72 +369,111 @@ export default function AdminPage() {
                 <input
                   type="text"
                   placeholder="e.g. 4452"
-                  value={form.offerId}
-                  onChange={(e) => setForm((f) => ({ ...f, offerId: e.target.value }))}
+                  value={formBase.offerId}
+                  onChange={(e) => setFormBase((f) => ({ ...f, offerId: e.target.value }))}
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
                 />
               </div>
             </div>
 
+            <div>
+              <label className="block text-sm text-gray-400 mb-1">Ad Spend (optional, for ROI tracking)</label>
+              <div className="relative w-48">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">€</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder="0.00"
+                  value={formBase.adSpend}
+                  onChange={(e) => setFormBase((f) => ({ ...f, adSpend: e.target.value }))}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg pl-7 pr-4 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                />
+              </div>
+            </div>
+
+            {/* Landers section */}
             {landingPages.length === 0 ? (
               <div className="bg-yellow-900/30 border border-yellow-700 rounded-lg p-4 text-yellow-300 text-sm">
                 No landing pages found. Upload a folder to <code>public/landing-pages/your-page/</code> and redeploy.
               </div>
             ) : (
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm text-gray-400 mb-1">
-                    Variant A <span className="text-blue-400">({form.splitA}%)</span>
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <label className="text-sm text-gray-400">
+                    Landing Page Rotation
+                    <span className="ml-2 text-xs text-gray-600">(1–5 landers)</span>
                   </label>
-                  <select
-                    required
-                    value={form.variantA}
-                    onChange={(e) => setForm((f) => ({ ...f, variantA: e.target.value }))}
-                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white focus:outline-none focus:border-blue-500"
-                  >
-                    <option value="">Select landing page...</option>
-                    {landingPages.map((lp) => (
-                      <option key={lp} value={lp}>{lp}</option>
-                    ))}
-                  </select>
+                  <div className="flex items-center gap-2">
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                      weightOk ? 'bg-green-900/50 text-green-400' : 'bg-red-900/50 text-red-400'
+                    }`}>
+                      {weightOk ? '✓ 100%' : `⚠ ${totalWeight}%`}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => autoSplit()}
+                      className="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-2 py-1 rounded transition-colors"
+                    >
+                      Auto-split
+                    </button>
+                  </div>
                 </div>
-                <div>
-                  <label className="block text-sm text-gray-400 mb-1">
-                    Variant B <span className="text-purple-400">({form.splitB}%)</span>
-                  </label>
-                  <select
-                    required
-                    value={form.variantB}
-                    onChange={(e) => setForm((f) => ({ ...f, variantB: e.target.value }))}
-                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white focus:outline-none focus:border-blue-500"
-                  >
-                    <option value="">Select landing page...</option>
-                    {landingPages.map((lp) => (
-                      <option key={lp} value={lp}>{lp}</option>
-                    ))}
-                  </select>
+
+                <div className="space-y-2">
+                  {landers.map((lander, idx) => (
+                    <div key={idx} className="flex items-center gap-3">
+                      <span className={`text-xs font-medium w-16 shrink-0 ${VARIANT_COLORS[idx]}`}>
+                        {landers.length === 1 ? '100%' : `Lander ${idx + 1}`}
+                      </span>
+                      <select
+                        value={lander.landingPage}
+                        onChange={(e) => setLanderPage(idx, e.target.value)}
+                        className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-blue-500 text-sm"
+                      >
+                        <option value="">Select landing page...</option>
+                        {landingPages.map((lp) => (
+                          <option key={lp} value={lp}>{lp}</option>
+                        ))}
+                      </select>
+                      {landers.length > 1 && (
+                        <div className="flex items-center gap-1 shrink-0">
+                          <input
+                            type="number"
+                            min={1}
+                            max={99}
+                            value={lander.weight}
+                            onChange={(e) => setLanderWeight(idx, parseInt(e.target.value) || 0)}
+                            className="w-16 bg-gray-800 border border-gray-700 rounded-lg px-2 py-2 text-white text-center text-sm focus:outline-none focus:border-blue-500"
+                          />
+                          <span className="text-gray-500 text-sm">%</span>
+                        </div>
+                      )}
+                      {landers.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => removeLander(idx)}
+                          className="text-red-500 hover:text-red-400 text-lg leading-none shrink-0 w-6 text-center"
+                          title="Remove lander"
+                        >
+                          ×
+                        </button>
+                      )}
+                    </div>
+                  ))}
                 </div>
+
+                {landers.length < 5 && (
+                  <button
+                    type="button"
+                    onClick={addLander}
+                    className="mt-3 text-sm text-blue-400 hover:text-blue-300 border border-blue-900 hover:border-blue-700 px-3 py-1.5 rounded-lg transition-colors"
+                  >
+                    + Add Lander
+                  </button>
+                )}
               </div>
             )}
-
-            <div>
-              <label className="block text-sm text-gray-400 mb-2">
-                Traffic Split — A: {form.splitA}% / B: {form.splitB}%
-              </label>
-              <input
-                type="range"
-                min={10}
-                max={90}
-                value={form.splitA}
-                onChange={(e) => handleSplitA(Number(e.target.value))}
-                className="w-full accent-blue-500"
-              />
-              <div className="flex justify-between text-xs text-gray-500 mt-1">
-                <span>A: 10%</span>
-                <span>50/50</span>
-                <span>A: 90%</span>
-              </div>
-            </div>
 
             {error && (
               <div className="bg-red-900/30 border border-red-700 rounded-lg p-3 text-red-300 text-sm">
@@ -377,7 +483,7 @@ export default function AdminPage() {
 
             <button
               type="submit"
-              disabled={creating || landingPages.length === 0}
+              disabled={creating || landingPages.length === 0 || !weightOk}
               className="w-full bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:cursor-not-allowed text-white font-semibold py-3 rounded-lg transition-colors"
             >
               {creating ? 'Creating...' : 'Create Campaign & Generate Link'}
@@ -437,10 +543,15 @@ export default function AdminPage() {
                             }`}>
                               {camp.status}
                             </span>
+                            {camp.variants?.length === 1 && (
+                              <span className="text-xs bg-blue-900/40 text-blue-300 px-2 py-0.5 rounded-full">
+                                Single lander
+                              </span>
+                            )}
                           </div>
                           <div className="flex flex-wrap gap-2 mb-3">
-                            {camp.variants?.map((v) => (
-                              <span key={v.id} className="text-xs bg-gray-800 text-gray-300 px-2 py-1 rounded">
+                            {camp.variants?.map((v, i) => (
+                              <span key={v.id} className={`text-xs bg-gray-800 px-2 py-1 rounded ${VARIANT_COLORS[i] ?? 'text-gray-300'}`}>
                                 {v.slug} ({v.trafficWeight}%)
                               </span>
                             ))}
@@ -489,31 +600,49 @@ export default function AdminPage() {
                     </div>
 
                     {/* Edit split panel */}
-                    {editingId === camp.id && camp.variants.length >= 2 && (
+                    {editingId === camp.id && (
                       <div className="border-t border-gray-800 bg-gray-950 px-5 py-4">
                         <p className="text-xs text-gray-400 mb-3">
                           Adjust traffic split — changes take effect immediately for new visitors.
                         </p>
-                        <div className="flex items-center gap-3 mb-1 text-sm text-white">
-                          <span className="text-blue-400 font-medium">{camp.variants[0].slug}</span>
-                          <span className="text-gray-500">{editSplit}%</span>
-                          <span className="text-gray-600 mx-1">/</span>
-                          <span className="text-purple-400 font-medium">{camp.variants[1].slug}</span>
-                          <span className="text-gray-500">{100 - editSplit}%</span>
+                        <div className="space-y-2 mb-3">
+                          {editWeights.map((w, i) => (
+                            <div key={w.id} className="flex items-center gap-3">
+                              <span className={`text-xs font-medium w-32 truncate ${VARIANT_COLORS[i] ?? 'text-gray-300'}`}>
+                                {w.slug}
+                              </span>
+                              <input
+                                type="number"
+                                min={editWeights.length === 1 ? 100 : 1}
+                                max={editWeights.length === 1 ? 100 : 99}
+                                value={w.weight}
+                                onChange={(e) => setEditWeight(i, parseInt(e.target.value) || 0)}
+                                disabled={editWeights.length === 1}
+                                className="w-20 bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-white text-center text-sm focus:outline-none focus:border-blue-500 disabled:opacity-50"
+                              />
+                              <span className="text-gray-500 text-sm">%</span>
+                            </div>
+                          ))}
                         </div>
-                        <input
-                          type="range"
-                          min={10}
-                          max={90}
-                          value={editSplit}
-                          onChange={(e) => setEditSplit(Number(e.target.value))}
-                          className="w-full accent-blue-500 mb-3"
-                        />
+                        <div className="flex items-center gap-2 mb-3">
+                          <span className={`text-xs px-2 py-0.5 rounded-full ${editOk ? 'bg-green-900/50 text-green-400' : 'bg-red-900/50 text-red-400'}`}>
+                            {editOk ? '✓ 100%' : `⚠ ${editTotal}%`}
+                          </span>
+                          {editWeights.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={autoSplitEdit}
+                              className="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-2 py-1 rounded transition-colors"
+                            >
+                              Auto-split
+                            </button>
+                          )}
+                        </div>
                         <div className="flex gap-2">
                           <button
                             onClick={() => handleEditSave(camp)}
-                            disabled={editSaving}
-                            className="text-xs bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 text-white px-4 py-1.5 rounded transition-colors"
+                            disabled={editSaving || !editOk}
+                            className="text-xs bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:cursor-not-allowed text-white px-4 py-1.5 rounded transition-colors"
                           >
                             {editSaving ? 'Saving...' : 'Save'}
                           </button>
@@ -546,6 +675,12 @@ export default function AdminPage() {
                               {d === 0 ? 'All time' : `${d}d`}
                             </button>
                           ))}
+                          <Link
+                            href={`/admin/analytics?campaign=${camp.id}`}
+                            className="ml-auto text-xs text-blue-400 hover:text-blue-300 transition-colors"
+                          >
+                            Full analytics →
+                          </Link>
                         </div>
 
                         {isStatsLoading ? (
@@ -575,16 +710,20 @@ export default function AdminPage() {
                               <div className="mb-5">
                                 <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Variant Performance</h4>
                                 <div className="space-y-3">
-                                  {campStats.variants.map((v) => {
+                                  {campStats.variants.map((v, vi) => {
                                     const isWinner = campStats.significance.winner === v.name;
+                                    const isLeader = campStats.significance.leader === v.name;
                                     return (
                                       <div key={v.id} className="bg-gray-900 rounded-lg p-3 border border-gray-800">
                                         <div className="flex items-center justify-between mb-2">
                                           <div className="flex items-center gap-2">
-                                            <span className="text-sm text-white font-medium">{v.name}</span>
+                                            <span className={`text-sm font-medium ${VARIANT_COLORS[vi] ?? 'text-white'}`}>{v.name}</span>
                                             <span className="text-xs text-gray-500">({v.trafficWeight}% traffic)</span>
                                             {isWinner && campStats.significance.isSignificant && (
                                               <span className="text-xs bg-green-900 text-green-400 px-2 py-0.5 rounded-full">Winner</span>
+                                            )}
+                                            {isLeader && !campStats.significance.isSignificant && campStats.variants.length > 1 && (
+                                              <span className="text-xs bg-yellow-900/50 text-yellow-400 px-2 py-0.5 rounded-full">Leading</span>
                                             )}
                                           </div>
                                           <div className="flex gap-4 text-xs text-gray-400">
@@ -596,7 +735,7 @@ export default function AdminPage() {
                                         </div>
                                         <Bar
                                           pct={Math.round(v.conversionRate)}
-                                          color={isWinner ? 'bg-green-500' : 'bg-blue-500'}
+                                          color={isWinner ? 'bg-green-500' : isLeader ? 'bg-yellow-500' : 'bg-blue-500'}
                                         />
                                       </div>
                                     );
@@ -604,21 +743,23 @@ export default function AdminPage() {
                                 </div>
 
                                 {/* Statistical significance */}
-                                <div className={`mt-2 text-xs px-3 py-2 rounded-lg ${
-                                  campStats.significance.isSignificant
-                                    ? 'bg-green-900/30 border border-green-800 text-green-400'
-                                    : campStats.significance.confidence >= 80
-                                    ? 'bg-yellow-900/30 border border-yellow-800 text-yellow-400'
-                                    : 'bg-gray-900 border border-gray-800 text-gray-500'
-                                }`}>
-                                  {campStats.significance.isSignificant
-                                    ? `Winner: ${campStats.significance.winner} — ${campStats.significance.confidence}% confidence (statistically significant)`
-                                    : campStats.significance.confidence >= 80
-                                    ? `Trending: ${campStats.significance.winner ?? 'no winner yet'} — ${campStats.significance.confidence}% confidence (needs 95% to be significant)`
-                                    : campStats.significance.confidence > 0
-                                    ? `Not enough data — ${campStats.significance.confidence}% confidence so far (needs 95%)`
-                                    : 'Not enough conversion data to compute significance'}
-                                </div>
+                                {campStats.variants.length > 1 && (
+                                  <div className={`mt-2 text-xs px-3 py-2 rounded-lg ${
+                                    campStats.significance.isSignificant
+                                      ? 'bg-green-900/30 border border-green-800 text-green-400'
+                                      : campStats.significance.confidence >= 80
+                                      ? 'bg-yellow-900/30 border border-yellow-800 text-yellow-400'
+                                      : 'bg-gray-900 border border-gray-800 text-gray-500'
+                                  }`}>
+                                    {campStats.significance.isSignificant
+                                      ? `Winner: ${campStats.significance.winner} — ${campStats.significance.confidence}% confidence (statistically significant)`
+                                      : campStats.significance.confidence >= 80
+                                      ? `Trending: ${campStats.significance.leader ?? 'no leader yet'} — ${campStats.significance.confidence}% confidence (needs 95%)`
+                                      : campStats.significance.confidence > 0
+                                      ? `Not enough data — ${campStats.significance.confidence}% confidence so far (needs 95%)`
+                                      : 'Not enough conversion data to compute significance'}
+                                  </div>
+                                )}
                               </div>
                             )}
 

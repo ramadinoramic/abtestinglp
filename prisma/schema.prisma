@@ -18,6 +18,7 @@ model Campaign {
   trafficSource String
   offerUrl      String
   offerId       String
+  adSpend       Float?
   variants      Variant[]
   clicks        Click[]
   createdAt     DateTime       @default(now())

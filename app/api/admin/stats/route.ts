@@ -47,6 +47,10 @@ type RawVariant = {
   isControl: boolean;
 };
 
+type RawCampaign = {
+  adSpend: number | null;
+};
+
 // GET /api/admin/stats?campaignId=xxx&days=30
 export async function GET(request: NextRequest) {
   const { url, key, configured } = getSupabaseConfig();
@@ -70,8 +74,8 @@ export async function GET(request: NextRequest) {
       dateFilter = `&createdAt=gte.${from}`;
     }
 
-    // Fetch clicks and variants in parallel
-    const [clicksRes, variantsRes] = await Promise.all([
+    // Fetch clicks, variants, and campaign in parallel
+    const [clicksRes, variantsRes, campaignRes] = await Promise.all([
       fetch(
         `${url}/rest/v1/Click?campaignId=eq.${campaignId}${dateFilter}&select=id,variantId,country,device,ctaClicked,converted,createdAt,conversion:Conversion(payoutAmount,playerValue,eventType)`,
         { headers: supabaseHeaders(key!) }
@@ -80,10 +84,16 @@ export async function GET(request: NextRequest) {
         `${url}/rest/v1/Variant?campaignId=eq.${campaignId}&select=id,name,slug,trafficWeight,isControl`,
         { headers: supabaseHeaders(key!) }
       ),
+      fetch(
+        `${url}/rest/v1/Campaign?id=eq.${campaignId}&select=adSpend`,
+        { headers: supabaseHeaders(key!) }
+      ),
     ]);
 
     const clicks: RawClick[] = clicksRes.ok ? await clicksRes.json() : [];
     const variants: RawVariant[] = variantsRes.ok ? await variantsRes.json() : [];
+    const campaignData: RawCampaign[] = campaignRes.ok ? await campaignRes.json() : [];
+    const adSpend: number | null = campaignData[0]?.adSpend ?? null;
 
     // ── Overview ──────────────────────────────────────────────────────────────
     const totalClicks = clicks.length;
@@ -93,6 +103,7 @@ export async function GET(request: NextRequest) {
       (sum, c) => sum + parseFloat(c.conversion?.payoutAmount ?? '0'),
       0
     );
+    const roi = adSpend && adSpend > 0 ? ((totalPayout - adSpend) / adSpend) * 100 : null;
 
     const overview = {
       totalClicks,
@@ -101,6 +112,8 @@ export async function GET(request: NextRequest) {
       conversions,
       conversionRate: totalClicks > 0 ? (conversions / totalClicks) * 100 : 0,
       totalPayout,
+      adSpend,
+      roi,
     };
 
     // ── Per-variant breakdown ─────────────────────────────────────────────────
@@ -168,18 +181,25 @@ export async function GET(request: NextRequest) {
       .sort((a, b) => a[0].localeCompare(b[0]))
       .map(([date, d]) => ({ date, ...d }));
 
-    // ── Statistical significance (z-test for two proportions) ─────────────────
-    // Only computed when there are exactly 2 variants with enough data.
-    let significance: { isSignificant: boolean; confidence: number; winner: string | null } = {
+    // ── Statistical significance (z-test for two top proportions) ─────────────
+    // Works for any number of variants: compare the top-2 by conversion rate.
+    let significance: { isSignificant: boolean; confidence: number; winner: string | null; leader: string | null } = {
       isSignificant: false,
       confidence: 0,
       winner: null,
+      leader: null,
     };
 
     if (variantStats.length >= 2) {
-      const [a, b] = variantStats;
-      const nA = a.clicks, nB = b.clicks;
-      const convA = a.conversions, convB = b.conversions;
+      // Sort by conversion rate descending to find the two leaders
+      const sorted = [...variantStats].sort((a, b) => b.conversionRate - a.conversionRate);
+      const best = sorted[0];
+      const second = sorted[1];
+
+      significance.leader = best.name;
+
+      const nA = best.clicks, nB = second.clicks;
+      const convA = best.conversions, convB = second.conversions;
 
       if (nA > 0 && nB > 0 && convA + convB > 0) {
         const p1 = convA / nA;
@@ -189,9 +209,15 @@ export async function GET(request: NextRequest) {
         const z = se > 0 ? Math.abs(p1 - p2) / se : 0;
         const confidence = Math.round((2 * normalCDF(z) - 1) * 100);
         const isSignificant = confidence >= 95;
-        const winner = isSignificant ? (p1 >= p2 ? a.name : b.name) : null;
-        significance = { isSignificant, confidence, winner };
+        significance = {
+          isSignificant,
+          confidence,
+          winner: isSignificant ? best.name : null,
+          leader: best.name,
+        };
       }
+    } else if (variantStats.length === 1) {
+      significance.leader = variantStats[0].name;
     }
 
     return NextResponse.json({ overview, variants: variantStats, countries, devices, daily, significance });

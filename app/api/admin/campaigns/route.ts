@@ -33,7 +33,7 @@ export async function GET() {
   }
 }
 
-// POST /api/admin/campaigns - create a new campaign with variants
+// POST /api/admin/campaigns - create a new campaign with 1-5 landers
 export async function POST(request: NextRequest) {
   const { url, key, configured } = getSupabaseConfig();
   if (!configured) {
@@ -45,16 +45,32 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const { name, slug, offerUrl, offerId, variantA, variantB, splitA, splitB } = body;
+    const { name, slug, offerUrl, offerId, adSpend, landers } = body as {
+      name: string;
+      slug: string;
+      offerUrl: string;
+      offerId?: string;
+      adSpend?: number;
+      landers: { landingPage: string; weight: number }[];
+    };
 
-    if (!name || !slug || !offerUrl || !variantA || !variantB) {
+    if (!name || !slug || !offerUrl) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+    }
+    if (!Array.isArray(landers) || landers.length < 1 || landers.length > 5) {
+      return NextResponse.json({ error: '1 to 5 landers required' }, { status: 400 });
+    }
+    const totalWeight = landers.reduce((s, l) => s + (l.weight ?? 0), 0);
+    if (Math.abs(totalWeight - 100) > 1) {
+      return NextResponse.json({ error: 'Traffic weights must sum to 100' }, { status: 400 });
+    }
+    for (const l of landers) {
+      if (!l.landingPage) {
+        return NextResponse.json({ error: 'Each lander must have a landing page selected' }, { status: 400 });
+      }
     }
 
     const now = new Date().toISOString();
-
-    // Generate IDs here — @default(cuid()) is Prisma-only and not a DB-level default,
-    // so we must provide the id explicitly when inserting via the Supabase REST API.
     const campaignId = crypto.randomUUID();
 
     // Create campaign
@@ -69,6 +85,7 @@ export async function POST(request: NextRequest) {
         trafficSource: 'meta',
         offerUrl,
         offerId: offerId || '',
+        adSpend: adSpend ?? null,
         updatedAt: now,
       }),
     });
@@ -83,44 +100,31 @@ export async function POST(request: NextRequest) {
 
     const campaign = { id: campaignId, name, slug, status: 'ACTIVE', offerUrl, offerId: offerId || '' };
 
-    // Create variant A
-    const varARes = await fetch(`${url}/rest/v1/Variant`, {
-      method: 'POST',
-      headers: { ...supabaseHeaders(key!), Prefer: 'return=minimal' },
-      body: JSON.stringify({
-        id: crypto.randomUUID(),
-        campaignId,
-        name: `Variant A - ${variantA}`,
-        slug: variantA,
-        theme: { type: 'custom', landingPage: variantA },
-        content: { landingPage: variantA },
-        trafficWeight: splitA ?? 50,
-        isControl: true,
-        updatedAt: now,
-      }),
-    });
-    if (!varARes.ok) {
-      console.error('[campaigns POST] variant A creation failed:', await varARes.text());
-    }
+    // Create all variants in parallel
+    const variantResults = await Promise.all(
+      landers.map((lander, i) =>
+        fetch(`${url}/rest/v1/Variant`, {
+          method: 'POST',
+          headers: { ...supabaseHeaders(key!), Prefer: 'return=minimal' },
+          body: JSON.stringify({
+            id: crypto.randomUUID(),
+            campaignId,
+            name: `Lander ${i + 1} - ${lander.landingPage}`,
+            slug: lander.landingPage,
+            theme: { type: 'custom', landingPage: lander.landingPage },
+            content: { landingPage: lander.landingPage },
+            trafficWeight: lander.weight,
+            isControl: i === 0,
+            updatedAt: now,
+          }),
+        })
+      )
+    );
 
-    // Create variant B
-    const varBRes = await fetch(`${url}/rest/v1/Variant`, {
-      method: 'POST',
-      headers: { ...supabaseHeaders(key!), Prefer: 'return=minimal' },
-      body: JSON.stringify({
-        id: crypto.randomUUID(),
-        campaignId,
-        name: `Variant B - ${variantB}`,
-        slug: variantB,
-        theme: { type: 'custom', landingPage: variantB },
-        content: { landingPage: variantB },
-        trafficWeight: splitB ?? 50,
-        isControl: false,
-        updatedAt: now,
-      }),
-    });
-    if (!varBRes.ok) {
-      console.error('[campaigns POST] variant B creation failed:', await varBRes.text());
+    for (let i = 0; i < variantResults.length; i++) {
+      if (!variantResults[i].ok) {
+        console.error(`[campaigns POST] lander ${i + 1} creation failed:`, await variantResults[i].text());
+      }
     }
 
     return NextResponse.json({ success: true, campaign });
@@ -130,7 +134,7 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// PATCH /api/admin/campaigns - update traffic weights for both variants
+// PATCH /api/admin/campaigns - update traffic weights for 1-5 variants
 export async function PATCH(request: NextRequest) {
   const { url, key, configured } = getSupabaseConfig();
   if (!configured) {
@@ -139,11 +143,11 @@ export async function PATCH(request: NextRequest) {
   try {
     const { variants } = await request.json() as { variants: { id: string; trafficWeight: number }[] };
 
-    if (!Array.isArray(variants) || variants.length !== 2) {
-      return NextResponse.json({ error: 'Exactly 2 variants required' }, { status: 400 });
+    if (!Array.isArray(variants) || variants.length < 1 || variants.length > 5) {
+      return NextResponse.json({ error: '1 to 5 variants required' }, { status: 400 });
     }
     const total = variants.reduce((s, v) => s + v.trafficWeight, 0);
-    if (total !== 100) {
+    if (Math.abs(total - 100) > 1) {
       return NextResponse.json({ error: 'Traffic weights must sum to 100' }, { status: 400 });
     }
 
