@@ -28,7 +28,9 @@
     ctaBtn.addEventListener('click', function (e) {
       e.preventDefault();
 
-      var offerUrl = ctaBtn.getAttribute('data-offer-url') || '';
+      // Prefer the offer URL injected by the tracker route (set at campaign level in admin),
+      // fall back to the data-offer-url attribute on the button (for manual/legacy pages).
+      var offerUrl = params.get('offer') || ctaBtn.getAttribute('data-offer-url') || '';
 
       if (!offerUrl) {
         console.warn('[tracker] No data-offer-url on #cta-btn');
