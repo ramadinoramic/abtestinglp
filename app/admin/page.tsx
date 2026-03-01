@@ -75,6 +75,11 @@ export default function AdminPage() {
   const [statsDays, setStatsDays] = useState<Record<string, number>>({});
   const [statsLoading, setStatsLoading] = useState<Record<string, boolean>>({});
 
+  // Edit split state
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editSplit, setEditSplit] = useState(50);
+  const [editSaving, setEditSaving] = useState(false);
+
   const [form, setForm] = useState({
     name: '',
     slug: '',
@@ -175,6 +180,53 @@ export default function AdminPage() {
     loadStats(campaignId, days);
   }
 
+  function openEditSplit(camp: Campaign) {
+    const varA = camp.variants[0];
+    setEditSplit(varA?.trafficWeight ?? 50);
+    setEditingId(camp.id);
+  }
+
+  async function handleEditSave(camp: Campaign) {
+    if (camp.variants.length < 2) return;
+    setEditSaving(true);
+    try {
+      const res = await fetch('/api/admin/campaigns', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          variants: [
+            { id: camp.variants[0].id, trafficWeight: editSplit },
+            { id: camp.variants[1].id, trafficWeight: 100 - editSplit },
+          ],
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setCampaigns((prev) =>
+          prev.map((c) =>
+            c.id === camp.id
+              ? {
+                  ...c,
+                  variants: c.variants.map((v, i) => ({
+                    ...v,
+                    trafficWeight: i === 0 ? editSplit : 100 - editSplit,
+                  })),
+                }
+              : c
+          )
+        );
+        setEditingId(null);
+      }
+    } finally {
+      setEditSaving(false);
+    }
+  }
+
+  async function handleLogout() {
+    await fetch('/api/auth/logout', { method: 'POST' });
+    window.location.href = '/login';
+  }
+
   function copyToClipboard(text: string) {
     navigator.clipboard.writeText(text);
   }
@@ -191,9 +243,17 @@ export default function AdminPage() {
     <div className="min-h-screen bg-gray-950 text-white p-6">
       <div className="max-w-4xl mx-auto">
         {/* Header */}
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold text-white">AB Test Dashboard</h1>
-          <p className="text-gray-400 mt-1">Create campaigns, select landing pages, get your tracking link.</p>
+        <div className="mb-8 flex items-start justify-between">
+          <div>
+            <h1 className="text-3xl font-bold text-white">AB Test Dashboard</h1>
+            <p className="text-gray-400 mt-1">Create campaigns, select landing pages, get your tracking link.</p>
+          </div>
+          <button
+            onClick={handleLogout}
+            className="text-sm text-gray-400 hover:text-white border border-gray-700 hover:border-gray-500 px-3 py-1.5 rounded-lg transition-colors mt-1"
+          >
+            Log out
+          </button>
         </div>
 
         {/* Create Campaign Form */}
@@ -409,6 +469,16 @@ export default function AdminPage() {
                             Stats {isExpanded ? '▲' : '▾'}
                           </button>
                           <button
+                            onClick={() => editingId === camp.id ? setEditingId(null) : openEditSplit(camp)}
+                            className={`text-xs px-3 py-1.5 rounded border transition-colors whitespace-nowrap ${
+                              editingId === camp.id
+                                ? 'bg-orange-900/40 border-orange-700 text-orange-300'
+                                : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700'
+                            }`}
+                          >
+                            Edit split
+                          </button>
+                          <button
                             onClick={() => handleDelete(camp.id, camp.name)}
                             className="text-red-500 hover:text-red-400 text-sm px-3 py-1 rounded border border-red-900 hover:border-red-700"
                           >
@@ -417,6 +487,45 @@ export default function AdminPage() {
                         </div>
                       </div>
                     </div>
+
+                    {/* Edit split panel */}
+                    {editingId === camp.id && camp.variants.length >= 2 && (
+                      <div className="border-t border-gray-800 bg-gray-950 px-5 py-4">
+                        <p className="text-xs text-gray-400 mb-3">
+                          Adjust traffic split — changes take effect immediately for new visitors.
+                        </p>
+                        <div className="flex items-center gap-3 mb-1 text-sm text-white">
+                          <span className="text-blue-400 font-medium">{camp.variants[0].slug}</span>
+                          <span className="text-gray-500">{editSplit}%</span>
+                          <span className="text-gray-600 mx-1">/</span>
+                          <span className="text-purple-400 font-medium">{camp.variants[1].slug}</span>
+                          <span className="text-gray-500">{100 - editSplit}%</span>
+                        </div>
+                        <input
+                          type="range"
+                          min={10}
+                          max={90}
+                          value={editSplit}
+                          onChange={(e) => setEditSplit(Number(e.target.value))}
+                          className="w-full accent-blue-500 mb-3"
+                        />
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => handleEditSave(camp)}
+                            disabled={editSaving}
+                            className="text-xs bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 text-white px-4 py-1.5 rounded transition-colors"
+                          >
+                            {editSaving ? 'Saving...' : 'Save'}
+                          </button>
+                          <button
+                            onClick={() => setEditingId(null)}
+                            className="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-4 py-1.5 rounded transition-colors"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )}
 
                     {/* Stats panel */}
                     {isExpanded && (

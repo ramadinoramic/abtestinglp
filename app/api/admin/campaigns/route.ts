@@ -130,6 +130,46 @@ export async function POST(request: NextRequest) {
   }
 }
 
+// PATCH /api/admin/campaigns - update traffic weights for both variants
+export async function PATCH(request: NextRequest) {
+  const { url, key, configured } = getSupabaseConfig();
+  if (!configured) {
+    return NextResponse.json({ error: 'Supabase not configured' }, { status: 503 });
+  }
+  try {
+    const { variants } = await request.json() as { variants: { id: string; trafficWeight: number }[] };
+
+    if (!Array.isArray(variants) || variants.length !== 2) {
+      return NextResponse.json({ error: 'Exactly 2 variants required' }, { status: 400 });
+    }
+    const total = variants.reduce((s, v) => s + v.trafficWeight, 0);
+    if (total !== 100) {
+      return NextResponse.json({ error: 'Traffic weights must sum to 100' }, { status: 400 });
+    }
+
+    const now = new Date().toISOString();
+    const patches = variants.map((v) =>
+      fetch(`${url}/rest/v1/Variant?id=eq.${v.id}`, {
+        method: 'PATCH',
+        headers: { ...supabaseHeaders(key!), Prefer: 'return=minimal' },
+        body: JSON.stringify({ trafficWeight: v.trafficWeight, updatedAt: now }),
+      })
+    );
+    const results = await Promise.all(patches);
+    for (const res of results) {
+      if (!res.ok) {
+        const text = await res.text();
+        console.error('[campaigns PATCH] variant update failed:', text);
+        return NextResponse.json({ error: 'Failed to update variant' }, { status: 400 });
+      }
+    }
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error('[campaigns PATCH]', error);
+    return NextResponse.json({ error: String(error) }, { status: 500 });
+  }
+}
+
 // DELETE /api/admin/campaigns?id=xxx
 export async function DELETE(request: NextRequest) {
   const { url, key, configured } = getSupabaseConfig();
