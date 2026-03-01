@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Example Casino Landing Page</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      min-height: 100vh;
+      background: #1a1a2e;
+      color: white;
+      font-family: Arial, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 2rem;
+    }
+    h1 { font-size: 3rem; margin-bottom: 1rem; color: #ffd700; }
+    p { font-size: 1.2rem; margin-bottom: 2rem; color: #ccc; }
+    .cta-btn {
+      background: #e63946;
+      color: white;
+      border: none;
+      padding: 1.2rem 3rem;
+      font-size: 1.4rem;
+      font-weight: bold;
+      border-radius: 8px;
+      cursor: pointer;
+      text-transform: uppercase;
+    }
+    .cta-btn:hover { opacity: 0.9; }
+    .note {
+      margin-top: 3rem;
+      padding: 1rem;
+      background: rgba(255,255,255,0.05);
+      border-radius: 8px;
+      font-size: 0.85rem;
+      color: #888;
+      max-width: 500px;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>🎰 Example Casino Page</h1>
+  <p>This is a sample landing page. Replace this with your real HTML.</p>
+
+  <!-- Your CTA button must have id="cta-btn" for tracking to work -->
+  <button class="cta-btn" id="cta-btn">Claim Bonus Now</button>
+
+  <div class="note">
+    <strong>For developers:</strong> This is an example. Drop your own folder into
+    <code>public/landing-pages/your-page-name/</code> with an <code>index.html</code>.
+    Add <code>id="cta-btn"</code> to your CTA button for click tracking.
+  </div>
+
+  <!-- Tracking snippet - keep this at the bottom of every landing page -->
+  <script src="/tracker.js"></script>
+</body>
+</html>

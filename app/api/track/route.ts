@@ -127,9 +127,23 @@ export async function GET(request: NextRequest) {
     });
 
     // Build landing page URL
-    const landingPageUrl = new URL('/lp', request.url);
+    // If variant slug matches a static HTML landing page, serve it from /landing-pages/
+    // Otherwise fall back to the built-in /lp route
+    const isStaticPage =
+      selectedVariant.theme &&
+      (selectedVariant.theme as Record<string, string>).type === 'custom';
+
+    let landingPageUrl: URL;
+    if (isStaticPage) {
+      landingPageUrl = new URL(
+        `/landing-pages/${selectedVariant.slug}/index.html`,
+        request.url
+      );
+    } else {
+      landingPageUrl = new URL('/lp', request.url);
+      landingPageUrl.searchParams.set('v', selectedVariant.slug);
+    }
     landingPageUrl.searchParams.set('c', clickId);
-    landingPageUrl.searchParams.set('v', selectedVariant.slug);
 
     const processingTime = Date.now() - startTime;
 
