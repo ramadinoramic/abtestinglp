@@ -254,7 +254,7 @@ export default function LinksPage() {
               </thead>
               <tbody className="divide-y divide-gray-800/50">
                 {[
-                  ['{CLICKID}', 'Your network's click ID macro — passed to your offer as ?c={clickid}'],
+                  ['{CLICKID}', "Your network's click ID macro — passed to your offer as ?c={clickid}"],
                   ['{EVENT}', 'registration · ftd · redeposit'],
                   ['{PAYOUT}', 'Payout amount e.g. 35.00'],
                   ['{CURRENCY}', 'Currency code, default EUR'],
