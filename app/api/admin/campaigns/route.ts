@@ -53,11 +53,16 @@ export async function POST(request: NextRequest) {
 
     const now = new Date().toISOString();
 
-    // Create campaign (return=minimal to avoid empty-body parsing issues)
+    // Generate IDs here — @default(cuid()) is Prisma-only and not a DB-level default,
+    // so we must provide the id explicitly when inserting via the Supabase REST API.
+    const campaignId = crypto.randomUUID();
+
+    // Create campaign
     const campaignRes = await fetch(`${url}/rest/v1/Campaign`, {
       method: 'POST',
       headers: { ...supabaseHeaders(key!), Prefer: 'return=minimal' },
       body: JSON.stringify({
+        id: campaignId,
         name,
         slug,
         status: 'ACTIVE',
@@ -76,25 +81,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: errJson }, { status: 400 });
     }
 
-    // Fetch the campaign back by slug to get its generated ID
-    const fetchRes = await fetch(
-      `${url}/rest/v1/Campaign?slug=eq.${encodeURIComponent(slug)}&select=id,slug,name,status,offerUrl,offerId,createdAt`,
-      { headers: supabaseHeaders(key!) }
-    );
-    const rows = await fetchRes.json();
-    const campaign = Array.isArray(rows) ? rows[0] : null;
-
-    if (!campaign?.id) {
-      console.error('[campaigns POST] could not fetch campaign after insert, rows:', rows);
-      return NextResponse.json({ error: 'Campaign created but could not retrieve ID. Check Supabase logs.' }, { status: 500 });
-    }
+    const campaign = { id: campaignId, name, slug, status: 'ACTIVE', offerUrl, offerId: offerId || '' };
 
     // Create variant A
     const varARes = await fetch(`${url}/rest/v1/Variant`, {
       method: 'POST',
       headers: { ...supabaseHeaders(key!), Prefer: 'return=minimal' },
       body: JSON.stringify({
-        campaignId: campaign.id,
+        id: crypto.randomUUID(),
+        campaignId,
         name: `Variant A - ${variantA}`,
         slug: variantA,
         theme: { type: 'custom', landingPage: variantA },
@@ -113,7 +108,8 @@ export async function POST(request: NextRequest) {
       method: 'POST',
       headers: { ...supabaseHeaders(key!), Prefer: 'return=minimal' },
       body: JSON.stringify({
-        campaignId: campaign.id,
+        id: crypto.randomUUID(),
+        campaignId,
         name: `Variant B - ${variantB}`,
         slug: variantB,
         theme: { type: 'custom', landingPage: variantB },
