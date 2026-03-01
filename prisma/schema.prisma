@@ -20,6 +20,7 @@ model Campaign {
   offerId       String
   adSpend       Float?
   geoGate       Boolean        @default(false)
+  shortCode     String?        @unique
   variants      Variant[]
   clicks        Click[]
   createdAt     DateTime       @default(now())

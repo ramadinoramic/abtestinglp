@@ -12,6 +12,7 @@ interface Campaign {
   offerId: string;
   adSpend?: number | null;
   geoGate?: boolean;
+  shortCode?: string | null;
   createdAt: string;
   variants: { id: string; name: string; slug: string; trafficWeight: number }[];
 }
@@ -93,6 +94,7 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [generatedLink, setGeneratedLink] = useState('');
+  const [generatedShortCode, setGeneratedShortCode] = useState('');
   const [error, setError] = useState('');
 
   // Stats state
@@ -205,6 +207,7 @@ export default function AdminPage() {
     if (data.success) {
       const link = `${BASE_URL}/api/track?campaign=${formBase.slug}`;
       setGeneratedLink(link);
+      setGeneratedShortCode(data.campaign?.shortCode ?? '');
       const campRes = await fetch('/api/admin/campaigns').then((r) => r.json());
       setCampaigns(campRes.campaigns || []);
       setFormBase({ name: '', slug: '', offerUrl: '', offerId: '', adSpend: '', geoGate: false });
@@ -324,6 +327,12 @@ export default function AdminPage() {
             <p className="text-gray-400 mt-1">Create campaigns, select landing pages, get your tracking link.</p>
           </div>
           <div className="flex items-center gap-2 mt-1">
+            <Link
+              href="/admin/links"
+              className="text-sm text-emerald-400 hover:text-emerald-300 border border-emerald-800 hover:border-emerald-600 px-3 py-1.5 rounded-lg transition-colors"
+            >
+              Links
+            </Link>
             <Link
               href="/admin/analytics"
               className="text-sm text-blue-400 hover:text-blue-300 border border-blue-800 hover:border-blue-600 px-3 py-1.5 rounded-lg transition-colors"
@@ -526,8 +535,8 @@ export default function AdminPage() {
 
           {/* Generated Link */}
           {generatedLink && (
-            <div className="mt-6 bg-green-900/30 border border-green-700 rounded-xl p-5">
-              <p className="text-green-400 font-semibold mb-2">Your Meta Ad Tracking Link:</p>
+            <div className="mt-6 bg-green-900/30 border border-green-700 rounded-xl p-5 space-y-3">
+              <p className="text-green-400 font-semibold">Campaign created! Your tracking links:</p>
               <div className="flex items-center gap-3">
                 <code className="flex-1 bg-gray-950 rounded-lg px-4 py-3 text-green-300 text-sm break-all">
                   {generatedLink}
@@ -539,8 +548,21 @@ export default function AdminPage() {
                   Copy
                 </button>
               </div>
-              <p className="text-gray-500 text-xs mt-3">
-                Paste this as the destination URL in your Meta ad. Add <code>&amp;utm_source=meta&amp;utm_campaign={"{{campaign.name}}"}</code> for UTM tracking.
+              {generatedShortCode && (
+                <div className="flex items-center gap-3">
+                  <code className="flex-1 bg-gray-950 rounded-lg px-4 py-3 text-emerald-300 text-sm break-all">
+                    {BASE_URL}/go/{generatedShortCode}
+                  </code>
+                  <button
+                    onClick={() => copyToClipboard(`${BASE_URL}/go/${generatedShortCode}`)}
+                    className="bg-emerald-700 hover:bg-emerald-600 text-white px-4 py-3 rounded-lg text-sm font-medium whitespace-nowrap"
+                  >
+                    Copy Short
+                  </button>
+                </div>
+              )}
+              <p className="text-gray-500 text-xs">
+                Use the short URL in ads for a cleaner look. Both URLs track identically. Visit <Link href="/admin/links" className="text-emerald-400 hover:text-emerald-300">Links Hub</Link> for UTM builder &amp; postback URL.
               </p>
             </div>
           )}
@@ -595,16 +617,31 @@ export default function AdminPage() {
                               </span>
                             ))}
                           </div>
-                          <div className="flex items-center gap-2">
-                            <code className="text-xs text-blue-400 bg-gray-950 px-3 py-1.5 rounded truncate max-w-md">
-                              {trackingLink}
-                            </code>
-                            <button
-                              onClick={() => copyToClipboard(trackingLink)}
-                              className="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-3 py-1.5 rounded whitespace-nowrap"
-                            >
-                              Copy
-                            </button>
+                          <div className="flex flex-col gap-1.5">
+                            <div className="flex items-center gap-2">
+                              <code className="text-xs text-blue-400 bg-gray-950 px-3 py-1.5 rounded truncate max-w-sm">
+                                {trackingLink}
+                              </code>
+                              <button
+                                onClick={() => copyToClipboard(trackingLink)}
+                                className="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-3 py-1.5 rounded whitespace-nowrap"
+                              >
+                                Copy
+                              </button>
+                            </div>
+                            {camp.shortCode && (
+                              <div className="flex items-center gap-2">
+                                <code className="text-xs text-emerald-400 bg-gray-950 px-3 py-1.5 rounded">
+                                  {BASE_URL}/go/{camp.shortCode}
+                                </code>
+                                <button
+                                  onClick={() => copyToClipboard(`${BASE_URL}/go/${camp.shortCode}`)}
+                                  className="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-3 py-1.5 rounded whitespace-nowrap"
+                                >
+                                  Copy Short
+                                </button>
+                              </div>
+                            )}
                           </div>
                         </div>
                         <div className="flex items-center gap-2 shrink-0">

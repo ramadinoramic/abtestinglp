@@ -73,6 +73,7 @@ export async function POST(request: NextRequest) {
 
     const now = new Date().toISOString();
     const campaignId = crypto.randomUUID();
+    const shortCode = Math.random().toString(36).slice(2, 8);
 
     // Create campaign
     const campaignRes = await fetch(`${url}/rest/v1/Campaign`, {
@@ -88,6 +89,7 @@ export async function POST(request: NextRequest) {
         offerId: offerId || '',
         adSpend: adSpend ?? null,
         geoGate: geoGate ?? false,
+        shortCode,
         updatedAt: now,
       }),
     });
@@ -100,7 +102,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: errJson }, { status: 400 });
     }
 
-    const campaign = { id: campaignId, name, slug, status: 'ACTIVE', offerUrl, offerId: offerId || '' };
+    const campaign = { id: campaignId, name, slug, status: 'ACTIVE', offerUrl, offerId: offerId || '', shortCode };
 
     // Create all variants in parallel
     const variantResults = await Promise.all(
@@ -136,14 +138,33 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// PATCH /api/admin/campaigns - update traffic weights for 1-5 variants
+// PATCH /api/admin/campaigns - update traffic weights for 1-5 variants OR generate short code
 export async function PATCH(request: NextRequest) {
   const { url, key, configured } = getSupabaseConfig();
   if (!configured) {
     return NextResponse.json({ error: 'Supabase not configured' }, { status: 503 });
   }
   try {
-    const { variants } = await request.json() as { variants: { id: string; trafficWeight: number }[] };
+    const body = await request.json() as {
+      variants?: { id: string; trafficWeight: number }[];
+      generateShortCode?: { campaignId: string };
+    };
+
+    // Handle short code generation for existing campaigns
+    if (body.generateShortCode) {
+      const { campaignId } = body.generateShortCode;
+      if (!campaignId) return NextResponse.json({ error: 'Missing campaignId' }, { status: 400 });
+      const shortCode = Math.random().toString(36).slice(2, 8);
+      const res = await fetch(`${url}/rest/v1/Campaign?id=eq.${campaignId}`, {
+        method: 'PATCH',
+        headers: { ...supabaseHeaders(key!), Prefer: 'return=representation' },
+        body: JSON.stringify({ shortCode, updatedAt: new Date().toISOString() }),
+      });
+      if (!res.ok) return NextResponse.json({ error: 'Failed to generate short code' }, { status: 400 });
+      return NextResponse.json({ success: true, shortCode });
+    }
+
+    const { variants } = body;
 
     if (!Array.isArray(variants) || variants.length < 1 || variants.length > 5) {
       return NextResponse.json({ error: '1 to 5 variants required' }, { status: 400 });
