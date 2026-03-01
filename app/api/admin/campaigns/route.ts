@@ -45,12 +45,13 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const { name, slug, offerUrl, offerId, adSpend, landers } = body as {
+    const { name, slug, offerUrl, offerId, adSpend, geoGate, landers } = body as {
       name: string;
       slug: string;
       offerUrl: string;
       offerId?: string;
       adSpend?: number;
+      geoGate?: boolean;
       landers: { landingPage: string; weight: number }[];
     };
 
@@ -86,6 +87,7 @@ export async function POST(request: NextRequest) {
         offerUrl,
         offerId: offerId || '',
         adSpend: adSpend ?? null,
+        geoGate: geoGate ?? false,
         updatedAt: now,
       }),
     });

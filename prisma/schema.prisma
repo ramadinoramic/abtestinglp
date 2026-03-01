@@ -19,6 +19,7 @@ model Campaign {
   offerUrl      String
   offerId       String
   adSpend       Float?
+  geoGate       Boolean        @default(false)
   variants      Variant[]
   clicks        Click[]
   createdAt     DateTime       @default(now())
@@ -42,9 +43,10 @@ model Variant {
   slug          String
   theme         Json
   content       Json
-  trafficWeight Int      @default(50)
-  isControl     Boolean  @default(false)
-  clicks        Click[]
+  trafficWeight    Int      @default(50)
+  isControl        Boolean  @default(false)
+  creativeMetadata Json?
+  clicks           Click[]
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
@@ -75,6 +77,8 @@ model Click {
   utmCampaign  String?
   utmContent   String?
   utmTerm      String?
+  vibe         String?
+  isBot        Boolean     @default(false)
   customParams Json?
   pageViews    Int         @default(1)
   timeOnPage   Int?

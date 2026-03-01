@@ -41,6 +41,16 @@ interface StatsData {
   }[];
   countries: { country: string; clicks: number; pct: number }[];
   devices: { device: string; clicks: number; pct: number }[];
+  vibes: {
+    vibe: string;
+    clicks: number;
+    impressions: number;
+    ctaClicks: number;
+    ctr: number;
+    conversions: number;
+    conversionRate: number;
+    payout: number;
+  }[];
   daily: { date: string; clicks: number; conversions: number }[];
   significance: { isSignificant: boolean; confidence: number; winner: string | null; leader: string | null };
 }
@@ -503,6 +513,43 @@ function AnalyticsInner() {
                 </div>
               )}
             </div>
+
+            {/* Vibe breakdown */}
+            {stats.vibes?.length > 0 && (
+              <div className="bg-gray-900 rounded-xl p-5 border border-gray-800">
+                <h3 className="text-sm font-semibold text-gray-300 mb-4">Ad Vibe Performance</h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-gray-800">
+                        <th className="text-left text-xs text-gray-500 font-medium pb-2 pr-4">Vibe</th>
+                        <th className="text-left text-xs text-gray-500 font-medium pb-2 pr-4">Impressions</th>
+                        <th className="text-left text-xs text-gray-500 font-medium pb-2 pr-4">CTA Rate</th>
+                        <th className="text-left text-xs text-gray-500 font-medium pb-2 pr-4">Conversions</th>
+                        <th className="text-left text-xs text-gray-500 font-medium pb-2 pr-4">Conv Rate</th>
+                        <th className="text-left text-xs text-gray-500 font-medium pb-2">Payout</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-800/50">
+                      {stats.vibes.map((v, i) => (
+                        <tr key={v.vibe}>
+                          <td className="py-2.5 pr-4">
+                            <span className="text-purple-300 font-medium text-sm">{v.vibe}</span>
+                            {i === 0 && <span className="ml-2 text-xs bg-purple-900/40 text-purple-400 px-1.5 py-0.5 rounded-full">Top</span>}
+                          </td>
+                          <td className="py-2.5 pr-4 text-sm text-gray-300">{v.impressions.toLocaleString()}</td>
+                          <td className="py-2.5 pr-4 text-sm text-gray-300">{fmt(v.ctr)}%</td>
+                          <td className="py-2.5 pr-4 text-sm text-gray-300">{v.conversions}</td>
+                          <td className="py-2.5 pr-4 text-sm text-gray-300">{fmt(v.conversionRate)}%</td>
+                          <td className="py-2.5 text-sm text-gray-300">€{fmt(v.payout, 2)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="text-xs text-gray-600 mt-3">Vibes are set via <code className="text-gray-500">?vibe=name</code> on your tracking link. Sorted by conversions.</p>
+              </div>
+            )}
 
           </div>
         )}

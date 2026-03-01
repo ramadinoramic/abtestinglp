@@ -18,6 +18,7 @@ interface CampaignData {
   name: string;
   offerUrl: string;
   offerId: string;
+  geoGate: boolean;
   variants: CampaignVariant[];
 }
 
@@ -38,8 +39,50 @@ interface ClickData {
   utmCampaign?: string;
   utmContent?: string;
   utmTerm?: string;
+  vibe?: string;
+  isBot: boolean;
   customParams?: Record<string, string>;
   timestamp: string;
+}
+
+// Known bot/crawler patterns — used to mark clicks as isBot for exclusion from stats.
+// Does NOT block or redirect bots — they'll still receive the normal redirect response.
+const BOT_UA_PATTERNS = [
+  /googlebot/i,
+  /google-inspectiontool/i,
+  /facebookexternalhit/i,
+  /facebot/i,
+  /bingbot/i,
+  /twitterbot/i,
+  /linkedinbot/i,
+  /slackbot/i,
+  /whatsapp/i,
+  /ahrefsbot/i,
+  /semrushbot/i,
+  /mj12bot/i,
+  /dotbot/i,
+  /yandexbot/i,
+  /baiduspider/i,
+  /applebot/i,
+  /petalbot/i,
+  /headlesschrome/i,
+  /phantomjs/i,
+  /puppeteer/i,
+  /selenium/i,
+  /webdriver/i,
+  /datadog/i,
+  /pingdom/i,
+  /uptimerobot/i,
+  /python-requests/i,
+  /go-http-client/i,
+  /java\/\d/i,
+  /curl\//i,
+  /wget\//i,
+];
+
+function isKnownBot(userAgent: string): boolean {
+  if (!userAgent || userAgent.trim() === '') return true;
+  return BOT_UA_PATTERNS.some((pattern) => pattern.test(userAgent));
 }
 
 export async function GET(request: NextRequest) {
@@ -66,12 +109,22 @@ export async function GET(request: NextRequest) {
     const device = detectDevice(userAgent);
     const os = detectOS(userAgent);
     const browser = detectBrowser(userAgent);
+    const bot = isKnownBot(userAgent);
 
     // Fetch campaign
     const campaign = await getCampaign(campaignSlug);
 
     if (!campaign) {
       return NextResponse.json({ error: 'Campaign not found' }, { status: 404 });
+    }
+
+    // Geo-gate: if campaign requires CH and visitor is not CH, redirect to geo-blocked page.
+    // Only applied to non-bot traffic (bots don't need the compliance message).
+    if (campaign.geoGate && !bot && country && country !== 'CH') {
+      return NextResponse.redirect(new URL('/geo-blocked', request.url), {
+        status: 302,
+        headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' },
+      });
     }
 
     // Select variant
@@ -93,11 +146,14 @@ export async function GET(request: NextRequest) {
     const utmContent = searchParams.get('utm_content') || undefined;
     const utmTerm = searchParams.get('utm_term') || undefined;
 
+    // Extract vibe (ad creative identifier)
+    const vibe = searchParams.get('vibe') || undefined;
+
+    // Capture remaining custom params (excluding reserved keys)
+    const RESERVED = new Set(['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'campaign', 'variant', 'vibe']);
     const customParams: Record<string, string> = {};
     searchParams.forEach((value, key) => {
-      if (!key.startsWith('utm_') && key !== 'campaign' && key !== 'variant') {
-        customParams[key] = value;
-      }
+      if (!RESERVED.has(key)) customParams[key] = value;
     });
 
     const clickData: ClickData = {
@@ -117,6 +173,8 @@ export async function GET(request: NextRequest) {
       utmCampaign,
       utmContent,
       utmTerm,
+      vibe,
+      isBot: bot,
       customParams: Object.keys(customParams).length > 0 ? customParams : undefined,
       timestamp: new Date().toISOString(),
     };
@@ -127,8 +185,6 @@ export async function GET(request: NextRequest) {
     });
 
     // Build landing page URL
-    // If variant slug matches a static HTML landing page, serve it from /landing-pages/
-    // Otherwise fall back to the built-in /lp route
     const isStaticPage =
       selectedVariant.theme &&
       (selectedVariant.theme as Record<string, string>).type === 'custom';
@@ -139,7 +195,6 @@ export async function GET(request: NextRequest) {
         `/landing-pages/${selectedVariant.slug}/index.html`,
         request.url
       );
-      // Inject the campaign offer URL so tracker.js can redirect without hardcoding
       if (campaign.offerUrl) {
         landingPageUrl.searchParams.set('offer', campaign.offerUrl);
       }
@@ -211,7 +266,6 @@ async function getCampaign(slug: string): Promise<CampaignData | null> {
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   if (!supabaseUrl || !supabaseKey) {
-    // Return mock data when Supabase is not configured (development)
     return getMockCampaign(slug);
   }
 
@@ -241,6 +295,7 @@ function getMockCampaign(slug: string): CampaignData {
     name: 'Swiss Sports Q1 2024',
     offerUrl: 'https://www.gomedia1000.com/redirect.aspx',
     offerId: '4452',
+    geoGate: false,
     variants: [
       {
         id: 'var_a',
@@ -296,6 +351,8 @@ async function logClickToDatabase(clickData: ClickData): Promise<void> {
         utmCampaign: clickData.utmCampaign,
         utmContent: clickData.utmContent,
         utmTerm: clickData.utmTerm,
+        vibe: clickData.vibe ?? null,
+        isBot: clickData.isBot,
         customParams: clickData.customParams,
         createdAt: clickData.timestamp,
       }),

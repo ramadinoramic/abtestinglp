@@ -36,6 +36,8 @@ type RawClick = {
   ctaClicked: boolean;
   landed: boolean;
   converted: boolean;
+  isBot: boolean;
+  vibe: string | null;
   createdAt: string;
   conversion: { payoutAmount: string | null; playerValue: string | null; eventType: string } | null;
 };
@@ -78,7 +80,7 @@ export async function GET(request: NextRequest) {
     // Fetch clicks, variants, and campaign in parallel
     const [clicksRes, variantsRes, campaignRes] = await Promise.all([
       fetch(
-        `${url}/rest/v1/Click?campaignId=eq.${campaignId}${dateFilter}&select=id,variantId,country,device,ctaClicked,landed,converted,createdAt,conversion:Conversion(payoutAmount,playerValue,eventType)`,
+        `${url}/rest/v1/Click?campaignId=eq.${campaignId}${dateFilter}&select=id,variantId,country,device,ctaClicked,landed,converted,isBot,vibe,createdAt,conversion:Conversion(payoutAmount,playerValue,eventType)`,
         { headers: supabaseHeaders(key!) }
       ),
       fetch(
@@ -96,12 +98,16 @@ export async function GET(request: NextRequest) {
     const campaignData: RawCampaign[] = campaignRes.ok ? await campaignRes.json() : [];
     const adSpend: number | null = campaignData[0]?.adSpend ?? null;
 
+    // ── Filter bots — all stats are based on real human traffic ──────────────
+    const realClicks = clicks.filter((c) => !c.isBot);
+    const botClicks = clicks.length - realClicks.length;
+
     // ── Overview ──────────────────────────────────────────────────────────────
-    const totalClicks = clicks.length;
-    const impressions = clicks.filter((c) => c.landed).length;
-    const ctaClicks = clicks.filter((c) => c.ctaClicked).length;
-    const conversions = clicks.filter((c) => c.converted).length;
-    const totalPayout = clicks.reduce(
+    const totalClicks = realClicks.length;
+    const impressions = realClicks.filter((c) => c.landed).length;
+    const ctaClicks = realClicks.filter((c) => c.ctaClicked).length;
+    const conversions = realClicks.filter((c) => c.converted).length;
+    const totalPayout = realClicks.reduce(
       (sum, c) => sum + parseFloat(c.conversion?.payoutAmount ?? '0'),
       0
     );
@@ -121,11 +127,12 @@ export async function GET(request: NextRequest) {
       totalPayout,
       adSpend,
       roi,
+      botClicks,
     };
 
     // ── Per-variant breakdown ─────────────────────────────────────────────────
     const variantStats = variants.map((v) => {
-      const vc = clicks.filter((c) => c.variantId === v.id);
+      const vc = realClicks.filter((c) => c.variantId === v.id);
       const vImpressions = vc.filter((c) => c.landed).length;
       const vCta = vc.filter((c) => c.ctaClicked).length;
       const vConv = vc.filter((c) => c.converted).length;
@@ -152,7 +159,7 @@ export async function GET(request: NextRequest) {
 
     // ── Country breakdown (top 5) ─────────────────────────────────────────────
     const countryMap: Record<string, number> = {};
-    for (const c of clicks) {
+    for (const c of realClicks) {
       const country = c.country || 'Unknown';
       countryMap[country] = (countryMap[country] ?? 0) + 1;
     }
@@ -167,7 +174,7 @@ export async function GET(request: NextRequest) {
 
     // ── Device breakdown ──────────────────────────────────────────────────────
     const deviceMap: Record<string, number> = {};
-    for (const c of clicks) {
+    for (const c of realClicks) {
       const device = c.device || 'Unknown';
       deviceMap[device] = (deviceMap[device] ?? 0) + 1;
     }
@@ -181,7 +188,7 @@ export async function GET(request: NextRequest) {
 
     // ── Daily trend ───────────────────────────────────────────────────────────
     const dailyMap: Record<string, { clicks: number; conversions: number }> = {};
-    for (const c of clicks) {
+    for (const c of realClicks) {
       const date = c.createdAt.slice(0, 10); // YYYY-MM-DD
       if (!dailyMap[date]) dailyMap[date] = { clicks: 0, conversions: 0 };
       dailyMap[date].clicks++;
@@ -190,6 +197,34 @@ export async function GET(request: NextRequest) {
     const daily = Object.entries(dailyMap)
       .sort((a, b) => a[0].localeCompare(b[0]))
       .map(([date, d]) => ({ date, ...d }));
+
+    // ── Vibe breakdown ────────────────────────────────────────────────────────
+    const vibeMap: Record<string, { clicks: number; impressions: number; ctaClicks: number; conversions: number; payout: number }> = {};
+    for (const c of realClicks) {
+      const key = c.vibe || '(no vibe)';
+      if (!vibeMap[key]) vibeMap[key] = { clicks: 0, impressions: 0, ctaClicks: 0, conversions: 0, payout: 0 };
+      vibeMap[key].clicks++;
+      if (c.landed) vibeMap[key].impressions++;
+      if (c.ctaClicked) vibeMap[key].ctaClicks++;
+      if (c.converted) vibeMap[key].conversions++;
+      vibeMap[key].payout += parseFloat(c.conversion?.payoutAmount ?? '0');
+    }
+    const vibes = Object.entries(vibeMap)
+      .filter(([key]) => key !== '(no vibe)')
+      .map(([vibe, d]) => {
+        const base = d.impressions > 0 ? d.impressions : d.clicks;
+        return {
+          vibe,
+          clicks: d.clicks,
+          impressions: d.impressions,
+          ctaClicks: d.ctaClicks,
+          ctr: base > 0 ? (d.ctaClicks / base) * 100 : 0,
+          conversions: d.conversions,
+          conversionRate: d.clicks > 0 ? (d.conversions / d.clicks) * 100 : 0,
+          payout: d.payout,
+        };
+      })
+      .sort((a, b) => b.conversions - a.conversions);
 
     // ── Statistical significance (z-test for two top proportions) ─────────────
     // Works for any number of variants: compare the top-2 by conversion rate.
@@ -230,7 +265,7 @@ export async function GET(request: NextRequest) {
       significance.leader = variantStats[0].name;
     }
 
-    return NextResponse.json({ overview, variants: variantStats, countries, devices, daily, significance });
+    return NextResponse.json({ overview, variants: variantStats, countries, devices, daily, vibes, significance });
   } catch (error) {
     console.error('[stats GET]', error);
     return NextResponse.json({ error: String(error) }, { status: 500 });

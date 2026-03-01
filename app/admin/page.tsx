@@ -11,6 +11,7 @@ interface Campaign {
   offerUrl: string;
   offerId: string;
   adSpend?: number | null;
+  geoGate?: boolean;
   createdAt: string;
   variants: { id: string; name: string; slug: string; trafficWeight: number }[];
 }
@@ -27,7 +28,18 @@ interface StatsData {
     totalPayout: number;
     adSpend?: number | null;
     roi?: number | null;
+    botClicks?: number;
   };
+  vibes: {
+    vibe: string;
+    clicks: number;
+    impressions: number;
+    ctaClicks: number;
+    ctr: number;
+    conversions: number;
+    conversionRate: number;
+    payout: number;
+  }[];
   variants: {
     id: string;
     name: string;
@@ -95,7 +107,7 @@ export default function AdminPage() {
   const [editSaving, setEditSaving] = useState(false);
 
   // Form state
-  const [formBase, setFormBase] = useState({ name: '', slug: '', offerUrl: '', offerId: '', adSpend: '' });
+  const [formBase, setFormBase] = useState({ name: '', slug: '', offerUrl: '', offerId: '', adSpend: '', geoGate: false });
   const [landers, setLanders] = useState<LanderRow[]>([{ landingPage: '', weight: 100 }]);
 
   useEffect(() => {
@@ -184,6 +196,7 @@ export default function AdminPage() {
       body: JSON.stringify({
         ...formBase,
         adSpend: formBase.adSpend ? parseFloat(formBase.adSpend) : null,
+        geoGate: formBase.geoGate,
         landers,
       }),
     });
@@ -194,7 +207,7 @@ export default function AdminPage() {
       setGeneratedLink(link);
       const campRes = await fetch('/api/admin/campaigns').then((r) => r.json());
       setCampaigns(campRes.campaigns || []);
-      setFormBase({ name: '', slug: '', offerUrl: '', offerId: '', adSpend: '' });
+      setFormBase({ name: '', slug: '', offerUrl: '', offerId: '', adSpend: '', geoGate: false });
       setLanders([{ landingPage: '', weight: 100 }]);
     } else {
       setError(JSON.stringify(data.error));
@@ -395,6 +408,24 @@ export default function AdminPage() {
               </div>
             </div>
 
+            {/* Geo-gate toggle */}
+            <label className="flex items-center gap-3 cursor-pointer select-none">
+              <div className="relative">
+                <input
+                  type="checkbox"
+                  className="sr-only"
+                  checked={formBase.geoGate}
+                  onChange={(e) => setFormBase((f) => ({ ...f, geoGate: e.target.checked }))}
+                />
+                <div className={`w-10 h-5 rounded-full transition-colors ${formBase.geoGate ? 'bg-blue-600' : 'bg-gray-700'}`} />
+                <div className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${formBase.geoGate ? 'translate-x-5' : ''}`} />
+              </div>
+              <div>
+                <span className="text-sm text-gray-200">Switzerland only (geo-gate)</span>
+                <p className="text-xs text-gray-500">Non-CH visitors will see a "not available in your region" page</p>
+              </div>
+            </label>
+
             {/* Landers section */}
             {landingPages.length === 0 ? (
               <div className="bg-yellow-900/30 border border-yellow-700 rounded-lg p-4 text-yellow-300 text-sm">
@@ -549,6 +580,11 @@ export default function AdminPage() {
                             {camp.variants?.length === 1 && (
                               <span className="text-xs bg-blue-900/40 text-blue-300 px-2 py-0.5 rounded-full">
                                 Single lander
+                              </span>
+                            )}
+                            {camp.geoGate && (
+                              <span className="text-xs bg-teal-900/40 text-teal-300 px-2 py-0.5 rounded-full">
+                                🇨🇭 CH only
                               </span>
                             )}
                           </div>
@@ -765,6 +801,35 @@ export default function AdminPage() {
                                       : 'Not enough conversion data to compute significance'}
                                   </div>
                                 )}
+                              </div>
+                            )}
+
+                            {/* Vibe breakdown */}
+                            {campStats.vibes?.length > 0 && (
+                              <div className="mb-4">
+                                <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Ad Vibe Performance</h4>
+                                <div className="space-y-2">
+                                  {campStats.vibes.map((v) => (
+                                    <div key={v.vibe} className="bg-gray-900 rounded-lg p-3 border border-gray-800">
+                                      <div className="flex items-center justify-between mb-1.5">
+                                        <span className="text-sm text-purple-300 font-medium">{v.vibe}</span>
+                                        <div className="flex gap-3 text-xs text-gray-400">
+                                          <span>{v.impressions} impr</span>
+                                          <span>CTR: {fmt(v.ctr)}%</span>
+                                          <span>{v.conversions} conv ({fmt(v.conversionRate)}%)</span>
+                                        </div>
+                                      </div>
+                                      <Bar pct={Math.round(v.conversionRate * 10)} color="bg-purple-500" />
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Bot filter info */}
+                            {(campStats.overview.botClicks ?? 0) > 0 && (
+                              <div className="text-xs text-gray-600 mb-3">
+                                {campStats.overview.botClicks} bot clicks filtered from stats
                               </div>
                             )}
 
