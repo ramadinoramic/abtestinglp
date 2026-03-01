@@ -139,6 +139,10 @@ export async function GET(request: NextRequest) {
         `/landing-pages/${selectedVariant.slug}/index.html`,
         request.url
       );
+      // Inject the campaign offer URL so tracker.js can redirect without hardcoding
+      if (campaign.offerUrl) {
+        landingPageUrl.searchParams.set('offer', campaign.offerUrl);
+      }
     } else {
       landingPageUrl = new URL('/lp', request.url);
       landingPageUrl.searchParams.set('v', selectedVariant.slug);
