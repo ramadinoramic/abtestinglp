@@ -13,10 +13,53 @@ interface Campaign {
   variants: { id: string; name: string; slug: string; trafficWeight: number }[];
 }
 
+interface StatsData {
+  overview: {
+    totalClicks: number;
+    ctaClicks: number;
+    ctr: number;
+    conversions: number;
+    conversionRate: number;
+    totalPayout: number;
+  };
+  variants: {
+    id: string;
+    name: string;
+    slug: string;
+    trafficWeight: number;
+    isControl: boolean;
+    clicks: number;
+    ctaClicks: number;
+    ctr: number;
+    conversions: number;
+    conversionRate: number;
+    payout: number;
+  }[];
+  countries: { country: string; clicks: number; pct: number }[];
+  devices: { device: string; clicks: number; pct: number }[];
+  daily: { date: string; clicks: number; conversions: number }[];
+  significance: { isSignificant: boolean; confidence: number; winner: string | null };
+}
+
 const BASE_URL =
   typeof window !== 'undefined'
     ? window.location.origin
     : 'https://abtestinglp.vercel.app';
+
+function fmt(n: number, decimals = 1) {
+  return n.toLocaleString('en', { maximumFractionDigits: decimals });
+}
+
+function Bar({ pct, color = 'bg-blue-500' }: { pct: number; color?: string }) {
+  return (
+    <div className="flex items-center gap-2">
+      <div className="flex-1 bg-gray-800 rounded-full h-2">
+        <div className={`${color} h-2 rounded-full transition-all`} style={{ width: `${Math.min(pct, 100)}%` }} />
+      </div>
+      <span className="text-xs text-gray-400 w-8 text-right">{pct}%</span>
+    </div>
+  );
+}
 
 export default function AdminPage() {
   const [landingPages, setLandingPages] = useState<string[]>([]);
@@ -25,6 +68,12 @@ export default function AdminPage() {
   const [creating, setCreating] = useState(false);
   const [generatedLink, setGeneratedLink] = useState('');
   const [error, setError] = useState('');
+
+  // Stats state
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [stats, setStats] = useState<Record<string, StatsData>>({});
+  const [statsDays, setStatsDays] = useState<Record<string, number>>({});
+  const [statsLoading, setStatsLoading] = useState<Record<string, boolean>>({});
 
   const [form, setForm] = useState({
     name: '',
@@ -97,6 +146,33 @@ export default function AdminPage() {
     if (!confirm(`Delete campaign "${name}"? This cannot be undone.`)) return;
     await fetch(`/api/admin/campaigns?id=${id}`, { method: 'DELETE' });
     setCampaigns((prev) => prev.filter((c) => c.id !== id));
+    if (expandedId === id) setExpandedId(null);
+  }
+
+  async function loadStats(campaignId: string, days: number) {
+    setStatsLoading((prev) => ({ ...prev, [campaignId]: true }));
+    try {
+      const res = await fetch(`/api/admin/stats?campaignId=${campaignId}&days=${days}`);
+      const data = await res.json();
+      setStats((prev) => ({ ...prev, [campaignId]: data }));
+    } finally {
+      setStatsLoading((prev) => ({ ...prev, [campaignId]: false }));
+    }
+  }
+
+  function toggleStats(campaignId: string) {
+    if (expandedId === campaignId) {
+      setExpandedId(null);
+    } else {
+      setExpandedId(campaignId);
+      const days = statsDays[campaignId] ?? 30;
+      loadStats(campaignId, days);
+    }
+  }
+
+  function changeStatsDays(campaignId: string, days: number) {
+    setStatsDays((prev) => ({ ...prev, [campaignId]: days }));
+    loadStats(campaignId, days);
   }
 
   function copyToClipboard(text: string) {
@@ -281,46 +357,201 @@ export default function AdminPage() {
             <div className="divide-y divide-gray-800">
               {campaigns.map((camp) => {
                 const trackingLink = `${BASE_URL}/api/track?campaign=${camp.slug}`;
+                const isExpanded = expandedId === camp.id;
+                const campStats = stats[camp.id];
+                const isStatsLoading = statsLoading[camp.id] ?? false;
+                const days = statsDays[camp.id] ?? 30;
+
                 return (
-                  <div key={camp.id} className="p-5">
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-3 mb-1">
-                          <span className="font-semibold text-white">{camp.name}</span>
-                          <span className={`text-xs px-2 py-0.5 rounded-full ${
-                            camp.status === 'ACTIVE'
-                              ? 'bg-green-900 text-green-400'
-                              : 'bg-gray-800 text-gray-400'
-                          }`}>
-                            {camp.status}
-                          </span>
-                        </div>
-                        <div className="flex flex-wrap gap-2 mb-3">
-                          {camp.variants?.map((v) => (
-                            <span key={v.id} className="text-xs bg-gray-800 text-gray-300 px-2 py-1 rounded">
-                              {v.slug} ({v.trafficWeight}%)
+                  <div key={camp.id}>
+                    {/* Campaign row */}
+                    <div className="p-5">
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-3 mb-1">
+                            <span className="font-semibold text-white">{camp.name}</span>
+                            <span className={`text-xs px-2 py-0.5 rounded-full ${
+                              camp.status === 'ACTIVE'
+                                ? 'bg-green-900 text-green-400'
+                                : 'bg-gray-800 text-gray-400'
+                            }`}>
+                              {camp.status}
                             </span>
-                          ))}
+                          </div>
+                          <div className="flex flex-wrap gap-2 mb-3">
+                            {camp.variants?.map((v) => (
+                              <span key={v.id} className="text-xs bg-gray-800 text-gray-300 px-2 py-1 rounded">
+                                {v.slug} ({v.trafficWeight}%)
+                              </span>
+                            ))}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <code className="text-xs text-blue-400 bg-gray-950 px-3 py-1.5 rounded truncate max-w-md">
+                              {trackingLink}
+                            </code>
+                            <button
+                              onClick={() => copyToClipboard(trackingLink)}
+                              className="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-3 py-1.5 rounded whitespace-nowrap"
+                            >
+                              Copy
+                            </button>
+                          </div>
                         </div>
-                        <div className="flex items-center gap-2">
-                          <code className="text-xs text-blue-400 bg-gray-950 px-3 py-1.5 rounded truncate max-w-md">
-                            {trackingLink}
-                          </code>
+                        <div className="flex items-center gap-2 shrink-0">
                           <button
-                            onClick={() => copyToClipboard(trackingLink)}
-                            className="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-3 py-1.5 rounded whitespace-nowrap"
+                            onClick={() => toggleStats(camp.id)}
+                            className={`text-xs px-3 py-1.5 rounded border transition-colors whitespace-nowrap ${
+                              isExpanded
+                                ? 'bg-blue-900/40 border-blue-700 text-blue-300'
+                                : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700'
+                            }`}
                           >
-                            Copy
+                            Stats {isExpanded ? '▲' : '▾'}
+                          </button>
+                          <button
+                            onClick={() => handleDelete(camp.id, camp.name)}
+                            className="text-red-500 hover:text-red-400 text-sm px-3 py-1 rounded border border-red-900 hover:border-red-700"
+                          >
+                            Delete
                           </button>
                         </div>
                       </div>
-                      <button
-                        onClick={() => handleDelete(camp.id, camp.name)}
-                        className="text-red-500 hover:text-red-400 text-sm px-3 py-1 rounded border border-red-900 hover:border-red-700"
-                      >
-                        Delete
-                      </button>
                     </div>
+
+                    {/* Stats panel */}
+                    {isExpanded && (
+                      <div className="border-t border-gray-800 bg-gray-950 px-5 py-4">
+                        {/* Date range tabs */}
+                        <div className="flex items-center gap-2 mb-4">
+                          <span className="text-xs text-gray-500 mr-1">Range:</span>
+                          {([7, 30, 0] as const).map((d) => (
+                            <button
+                              key={d}
+                              onClick={() => changeStatsDays(camp.id, d)}
+                              className={`text-xs px-3 py-1 rounded transition-colors ${
+                                days === d
+                                  ? 'bg-blue-600 text-white'
+                                  : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
+                              }`}
+                            >
+                              {d === 0 ? 'All time' : `${d}d`}
+                            </button>
+                          ))}
+                        </div>
+
+                        {isStatsLoading ? (
+                          <div className="text-gray-500 text-sm py-4 text-center">Loading stats...</div>
+                        ) : !campStats ? (
+                          <div className="text-gray-600 text-sm py-4 text-center">No data yet.</div>
+                        ) : (
+                          <>
+                            {/* Overview metric cards */}
+                            <div className="grid grid-cols-5 gap-3 mb-5">
+                              {[
+                                { label: 'Clicks', value: campStats.overview.totalClicks.toLocaleString() },
+                                { label: 'CTA Rate', value: `${fmt(campStats.overview.ctr)}%` },
+                                { label: 'Conversions', value: campStats.overview.conversions.toLocaleString() },
+                                { label: 'Conv Rate', value: `${fmt(campStats.overview.conversionRate)}%` },
+                                { label: 'Payout', value: `€${fmt(campStats.overview.totalPayout, 2)}` },
+                              ].map((m) => (
+                                <div key={m.label} className="bg-gray-900 rounded-lg p-3 border border-gray-800">
+                                  <div className="text-xs text-gray-500 mb-1">{m.label}</div>
+                                  <div className="text-lg font-semibold text-white">{m.value}</div>
+                                </div>
+                              ))}
+                            </div>
+
+                            {/* Variant comparison */}
+                            {campStats.variants.length > 0 && (
+                              <div className="mb-5">
+                                <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Variant Performance</h4>
+                                <div className="space-y-3">
+                                  {campStats.variants.map((v) => {
+                                    const isWinner = campStats.significance.winner === v.name;
+                                    return (
+                                      <div key={v.id} className="bg-gray-900 rounded-lg p-3 border border-gray-800">
+                                        <div className="flex items-center justify-between mb-2">
+                                          <div className="flex items-center gap-2">
+                                            <span className="text-sm text-white font-medium">{v.name}</span>
+                                            <span className="text-xs text-gray-500">({v.trafficWeight}% traffic)</span>
+                                            {isWinner && campStats.significance.isSignificant && (
+                                              <span className="text-xs bg-green-900 text-green-400 px-2 py-0.5 rounded-full">Winner</span>
+                                            )}
+                                          </div>
+                                          <div className="flex gap-4 text-xs text-gray-400">
+                                            <span>{v.clicks.toLocaleString()} clicks</span>
+                                            <span>CTR: {fmt(v.ctr)}%</span>
+                                            <span>{v.conversions} conv ({fmt(v.conversionRate)}%)</span>
+                                            <span>€{fmt(v.payout, 2)}</span>
+                                          </div>
+                                        </div>
+                                        <Bar
+                                          pct={Math.round(v.conversionRate)}
+                                          color={isWinner ? 'bg-green-500' : 'bg-blue-500'}
+                                        />
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+
+                                {/* Statistical significance */}
+                                <div className={`mt-2 text-xs px-3 py-2 rounded-lg ${
+                                  campStats.significance.isSignificant
+                                    ? 'bg-green-900/30 border border-green-800 text-green-400'
+                                    : campStats.significance.confidence >= 80
+                                    ? 'bg-yellow-900/30 border border-yellow-800 text-yellow-400'
+                                    : 'bg-gray-900 border border-gray-800 text-gray-500'
+                                }`}>
+                                  {campStats.significance.isSignificant
+                                    ? `Winner: ${campStats.significance.winner} — ${campStats.significance.confidence}% confidence (statistically significant)`
+                                    : campStats.significance.confidence >= 80
+                                    ? `Trending: ${campStats.significance.winner ?? 'no winner yet'} — ${campStats.significance.confidence}% confidence (needs 95% to be significant)`
+                                    : campStats.significance.confidence > 0
+                                    ? `Not enough data — ${campStats.significance.confidence}% confidence so far (needs 95%)`
+                                    : 'Not enough conversion data to compute significance'}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Country + Device breakdown */}
+                            <div className="grid grid-cols-2 gap-4">
+                              {campStats.countries.length > 0 && (
+                                <div>
+                                  <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Top Countries</h4>
+                                  <div className="space-y-2">
+                                    {campStats.countries.map((c) => (
+                                      <div key={c.country}>
+                                        <div className="flex justify-between text-xs text-gray-400 mb-1">
+                                          <span>{c.country}</span>
+                                          <span>{c.clicks.toLocaleString()}</span>
+                                        </div>
+                                        <Bar pct={c.pct} color="bg-purple-500" />
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                              {campStats.devices.length > 0 && (
+                                <div>
+                                  <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Devices</h4>
+                                  <div className="space-y-2">
+                                    {campStats.devices.map((d) => (
+                                      <div key={d.device}>
+                                        <div className="flex justify-between text-xs text-gray-400 mb-1">
+                                          <span>{d.device}</span>
+                                          <span>{d.clicks.toLocaleString()}</span>
+                                        </div>
+                                        <Bar pct={d.pct} color="bg-teal-500" />
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    )}
                   </div>
                 );
               })}
