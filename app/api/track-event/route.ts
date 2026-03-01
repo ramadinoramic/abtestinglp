@@ -33,6 +33,9 @@ export async function POST(request: NextRequest) {
     };
 
     switch (event) {
+      case 'page_view':
+        updateData.landed = true;
+        break;
       case 'cta_click':
         updateData.ctaClicked = true;
         updateData.clickedAt = timestamp;

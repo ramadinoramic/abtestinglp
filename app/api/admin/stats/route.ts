@@ -34,6 +34,7 @@ type RawClick = {
   country: string | null;
   device: string | null;
   ctaClicked: boolean;
+  landed: boolean;
   converted: boolean;
   createdAt: string;
   conversion: { payoutAmount: string | null; playerValue: string | null; eventType: string } | null;
@@ -77,7 +78,7 @@ export async function GET(request: NextRequest) {
     // Fetch clicks, variants, and campaign in parallel
     const [clicksRes, variantsRes, campaignRes] = await Promise.all([
       fetch(
-        `${url}/rest/v1/Click?campaignId=eq.${campaignId}${dateFilter}&select=id,variantId,country,device,ctaClicked,converted,createdAt,conversion:Conversion(payoutAmount,playerValue,eventType)`,
+        `${url}/rest/v1/Click?campaignId=eq.${campaignId}${dateFilter}&select=id,variantId,country,device,ctaClicked,landed,converted,createdAt,conversion:Conversion(payoutAmount,playerValue,eventType)`,
         { headers: supabaseHeaders(key!) }
       ),
       fetch(
@@ -97,6 +98,7 @@ export async function GET(request: NextRequest) {
 
     // ── Overview ──────────────────────────────────────────────────────────────
     const totalClicks = clicks.length;
+    const impressions = clicks.filter((c) => c.landed).length;
     const ctaClicks = clicks.filter((c) => c.ctaClicked).length;
     const conversions = clicks.filter((c) => c.converted).length;
     const totalPayout = clicks.reduce(
@@ -107,8 +109,13 @@ export async function GET(request: NextRequest) {
 
     const overview = {
       totalClicks,
+      impressions,
+      landingRate: totalClicks > 0 ? (impressions / totalClicks) * 100 : 0,
       ctaClicks,
-      ctr: totalClicks > 0 ? (ctaClicks / totalClicks) * 100 : 0,
+      // CTR relative to impressions (real humans who saw the lander); fall back to totalClicks if no impressions yet
+      ctr: (impressions > 0 ? impressions : totalClicks) > 0
+        ? (ctaClicks / (impressions > 0 ? impressions : totalClicks)) * 100
+        : 0,
       conversions,
       conversionRate: totalClicks > 0 ? (conversions / totalClicks) * 100 : 0,
       totalPayout,
@@ -119,12 +126,14 @@ export async function GET(request: NextRequest) {
     // ── Per-variant breakdown ─────────────────────────────────────────────────
     const variantStats = variants.map((v) => {
       const vc = clicks.filter((c) => c.variantId === v.id);
+      const vImpressions = vc.filter((c) => c.landed).length;
       const vCta = vc.filter((c) => c.ctaClicked).length;
       const vConv = vc.filter((c) => c.converted).length;
       const vPayout = vc.reduce(
         (sum, c) => sum + parseFloat(c.conversion?.payoutAmount ?? '0'),
         0
       );
+      const vBase = vImpressions > 0 ? vImpressions : vc.length;
       return {
         id: v.id,
         name: v.name,
@@ -132,8 +141,9 @@ export async function GET(request: NextRequest) {
         trafficWeight: v.trafficWeight,
         isControl: v.isControl,
         clicks: vc.length,
+        impressions: vImpressions,
         ctaClicks: vCta,
-        ctr: vc.length > 0 ? (vCta / vc.length) * 100 : 0,
+        ctr: vBase > 0 ? (vCta / vBase) * 100 : 0,
         conversions: vConv,
         conversionRate: vc.length > 0 ? (vConv / vc.length) * 100 : 0,
         payout: vPayout,

@@ -80,6 +80,7 @@ model Click {
   timeOnPage   Int?
   scrollDepth  Int?
   ctaClicked   Boolean     @default(false)
+  landed       Boolean     @default(false)
   clickedAt    DateTime?
   converted    Boolean     @default(false)
   conversion   Conversion?

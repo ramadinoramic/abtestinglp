@@ -18,6 +18,8 @@ interface Campaign {
 interface StatsData {
   overview: {
     totalClicks: number;
+    impressions: number;
+    landingRate: number;
     ctaClicks: number;
     ctr: number;
     conversions: number;
@@ -33,6 +35,7 @@ interface StatsData {
     trafficWeight: number;
     isControl: boolean;
     clicks: number;
+    impressions: number;
     ctaClicks: number;
     ctr: number;
     conversions: number;
@@ -690,17 +693,19 @@ export default function AdminPage() {
                         ) : (
                           <>
                             {/* Overview metric cards */}
-                            <div className="grid grid-cols-5 gap-3 mb-5">
+                            <div className="grid grid-cols-3 gap-2 mb-5 sm:grid-cols-6">
                               {[
-                                { label: 'Clicks', value: campStats.overview.totalClicks.toLocaleString() },
-                                { label: 'CTA Rate', value: `${fmt(campStats.overview.ctr)}%` },
-                                { label: 'Conversions', value: campStats.overview.conversions.toLocaleString() },
-                                { label: 'Conv Rate', value: `${fmt(campStats.overview.conversionRate)}%` },
-                                { label: 'Payout', value: `€${fmt(campStats.overview.totalPayout, 2)}` },
+                                { label: 'Link Clicks', value: campStats.overview.totalClicks.toLocaleString(), sub: 'incl. bots' },
+                                { label: 'Impressions', value: campStats.overview.impressions.toLocaleString(), sub: `${fmt(campStats.overview.landingRate)}% landed` },
+                                { label: 'CTA Rate', value: `${fmt(campStats.overview.ctr)}%`, sub: 'of impressions' },
+                                { label: 'Conversions', value: campStats.overview.conversions.toLocaleString(), sub: null },
+                                { label: 'Conv Rate', value: `${fmt(campStats.overview.conversionRate)}%`, sub: null },
+                                { label: 'Payout', value: `€${fmt(campStats.overview.totalPayout, 2)}`, sub: null },
                               ].map((m) => (
                                 <div key={m.label} className="bg-gray-900 rounded-lg p-3 border border-gray-800">
                                   <div className="text-xs text-gray-500 mb-1">{m.label}</div>
-                                  <div className="text-lg font-semibold text-white">{m.value}</div>
+                                  <div className="text-base font-semibold text-white">{m.value}</div>
+                                  {m.sub && <div className="text-xs text-gray-600 mt-0.5">{m.sub}</div>}
                                 </div>
                               ))}
                             </div>
@@ -727,7 +732,7 @@ export default function AdminPage() {
                                             )}
                                           </div>
                                           <div className="flex gap-4 text-xs text-gray-400">
-                                            <span>{v.clicks.toLocaleString()} clicks</span>
+                                            <span>{v.impressions.toLocaleString()} impr</span>
                                             <span>CTR: {fmt(v.ctr)}%</span>
                                             <span>{v.conversions} conv ({fmt(v.conversionRate)}%)</span>
                                             <span>€{fmt(v.payout, 2)}</span>

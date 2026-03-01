@@ -15,6 +15,8 @@ interface Campaign {
 interface StatsData {
   overview: {
     totalClicks: number;
+    impressions: number;
+    landingRate: number;
     ctaClicks: number;
     ctr: number;
     conversions: number;
@@ -30,6 +32,7 @@ interface StatsData {
     trafficWeight: number;
     isControl: boolean;
     clicks: number;
+    impressions: number;
     ctaClicks: number;
     ctr: number;
     conversions: number;
@@ -318,13 +321,23 @@ function AnalyticsInner() {
           <div className="space-y-6">
 
             {/* Overview cards */}
-            <div className="grid grid-cols-3 gap-4 sm:grid-cols-6">
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
               {[
-                { label: 'Total Clicks', value: stats.overview.totalClicks.toLocaleString(), sub: null },
+                { label: 'Link Clicks', value: stats.overview.totalClicks.toLocaleString(), sub: 'tracking link hits' },
+                { label: 'Impressions', value: stats.overview.impressions.toLocaleString(), sub: `${fmt(stats.overview.landingRate)}% landing rate` },
                 { label: 'CTA Rate', value: `${fmt(stats.overview.ctr)}%`, sub: `${stats.overview.ctaClicks.toLocaleString()} CTA clicks` },
-                { label: 'Conversions', value: stats.overview.conversions.toLocaleString(), sub: null },
-                { label: 'Conv Rate', value: `${fmt(stats.overview.conversionRate)}%`, sub: null },
-                { label: 'Revenue', value: `€${fmt(stats.overview.totalPayout, 2)}`, sub: stats.overview.adSpend ? `Spend: €${fmt(stats.overview.adSpend, 2)}` : 'No spend set' },
+                { label: 'Conversions', value: stats.overview.conversions.toLocaleString(), sub: `${fmt(stats.overview.conversionRate)}% conv rate` },
+              ].map((m) => (
+                <div key={m.label} className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+                  <div className="text-xs text-gray-500 mb-1">{m.label}</div>
+                  <div className="text-xl font-bold text-white">{m.value}</div>
+                  {m.sub && <div className="text-xs text-gray-600 mt-0.5">{m.sub}</div>}
+                </div>
+              ))}
+            </div>
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+              {[
+                { label: 'Revenue', value: `€${fmt(stats.overview.totalPayout, 2)}`, sub: stats.overview.adSpend ? `Spend: €${fmt(stats.overview.adSpend, 2)}` : 'No spend set', color: undefined },
                 {
                   label: 'ROI',
                   value: stats.overview.roi != null ? `${fmt(stats.overview.roi, 1)}%` : '—',
@@ -335,12 +348,11 @@ function AnalyticsInner() {
                     ? stats.overview.roi >= 0 ? 'text-green-400' : 'text-red-400'
                     : 'text-gray-500',
                 },
+                { label: 'Conv Rate', value: `${fmt(stats.overview.conversionRate)}%`, sub: 'conversions / link clicks', color: undefined },
               ].map((m) => (
                 <div key={m.label} className="bg-gray-900 rounded-xl p-4 border border-gray-800">
                   <div className="text-xs text-gray-500 mb-1">{m.label}</div>
-                  <div className={`text-xl font-bold ${(m as { color?: string }).color ?? 'text-white'}`}>
-                    {m.value}
-                  </div>
+                  <div className={`text-xl font-bold ${m.color ?? 'text-white'}`}>{m.value}</div>
                   {m.sub && <div className="text-xs text-gray-600 mt-0.5">{m.sub}</div>}
                 </div>
               ))}
@@ -391,7 +403,7 @@ function AnalyticsInner() {
                     </thead>
                     <tbody className="divide-y divide-gray-800/50">
                       {[
-                        { label: 'Clicks', getValue: (v: StatsData['variants'][0]) => v.clicks.toLocaleString() },
+                        { label: 'Impressions', getValue: (v: StatsData['variants'][0]) => v.impressions.toLocaleString() },
                         { label: 'CTA Rate', getValue: (v: StatsData['variants'][0]) => `${fmt(v.ctr)}%` },
                         { label: 'Conversions', getValue: (v: StatsData['variants'][0]) => v.conversions.toLocaleString() },
                         { label: 'Conv Rate', getValue: (v: StatsData['variants'][0]) => `${fmt(v.conversionRate)}%` },
