@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { nanoid } from 'nanoid';
+import { resolveTokens } from '@/lib/tokens';
 
 export const runtime = 'edge';
+
+// ─── Interfaces ───────────────────────────────────────────────────────────────
 
 interface CampaignVariant {
   id: string;
@@ -10,6 +13,8 @@ interface CampaignVariant {
   trafficWeight: number;
   theme: Record<string, string>;
   content: Record<string, string>;
+  cumulativeClicks: number;
+  cumulativeConversions: number;
 }
 
 interface CampaignData {
@@ -19,71 +24,214 @@ interface CampaignData {
   offerUrl: string;
   offerId: string;
   geoGate: boolean;
+  optimizationMode: string;  // 'STATIC' | 'BANDIT'
+  startsAt: string | null;
+  endsAt: string | null;
   variants: CampaignVariant[];
 }
 
-interface ClickData {
-  clickId: string;
-  campaignId: string;
-  variantId: string;
-  variantSlug: string;
-  ipAddress: string;
-  userAgent: string;
-  country?: string;
-  device?: 'MOBILE' | 'DESKTOP' | 'TABLET';
-  os?: string;
-  browser?: string;
-  referrer?: string;
-  utmSource?: string;
-  utmMedium?: string;
-  utmCampaign?: string;
-  utmContent?: string;
-  utmTerm?: string;
-  vibe?: string;
-  isBot: boolean;
-  customParams?: Record<string, string>;
-  timestamp: string;
+// ─── Rate Limiting (in-memory, per-instance) ──────────────────────────────────
+// For distributed rate limiting at scale, replace with Upstash Redis.
+
+const ipHits = new Map<string, { count: number; windowStart: number }>();
+const RATE_LIMIT = 30;   // max requests per window
+const WINDOW_MS = 60_000; // 60 seconds
+
+function isRateLimited(ip: string): boolean {
+  // Clean up stale entries periodically
+  if (ipHits.size > 10_000) {
+    const cutoff = Date.now() - WINDOW_MS;
+    for (const [k, v] of ipHits) {
+      if (v.windowStart < cutoff) ipHits.delete(k);
+    }
+  }
+
+  const now = Date.now();
+  const entry = ipHits.get(ip);
+  if (!entry || now - entry.windowStart > WINDOW_MS) {
+    ipHits.set(ip, { count: 1, windowStart: now });
+    return false;
+  }
+  entry.count++;
+  return entry.count > RATE_LIMIT;
 }
 
-// Known bot/crawler patterns — used to mark clicks as isBot for exclusion from stats.
-// Does NOT block or redirect bots — they'll still receive the normal redirect response.
+// ─── Bot Detection ────────────────────────────────────────────────────────────
+
 const BOT_UA_PATTERNS = [
-  /googlebot/i,
-  /google-inspectiontool/i,
-  /facebookexternalhit/i,
-  /facebot/i,
-  /bingbot/i,
-  /twitterbot/i,
-  /linkedinbot/i,
-  /slackbot/i,
-  /whatsapp/i,
-  /ahrefsbot/i,
-  /semrushbot/i,
-  /mj12bot/i,
-  /dotbot/i,
-  /yandexbot/i,
-  /baiduspider/i,
-  /applebot/i,
-  /petalbot/i,
-  /headlesschrome/i,
-  /phantomjs/i,
-  /puppeteer/i,
-  /selenium/i,
-  /webdriver/i,
-  /datadog/i,
-  /pingdom/i,
-  /uptimerobot/i,
-  /python-requests/i,
-  /go-http-client/i,
-  /java\/\d/i,
-  /curl\//i,
-  /wget\//i,
+  /googlebot/i, /google-inspectiontool/i, /facebookexternalhit/i, /facebot/i,
+  /bingbot/i, /twitterbot/i, /linkedinbot/i, /slackbot/i, /whatsapp/i,
+  /ahrefsbot/i, /semrushbot/i, /mj12bot/i, /dotbot/i, /yandexbot/i,
+  /baiduspider/i, /applebot/i, /petalbot/i, /headlesschrome/i, /phantomjs/i,
+  /puppeteer/i, /selenium/i, /webdriver/i, /datadog/i, /pingdom/i,
+  /uptimerobot/i, /python-requests/i, /go-http-client/i, /java\/\d/i,
+  /curl\//i, /wget\//i,
 ];
 
 function isKnownBot(userAgent: string): boolean {
   if (!userAgent || userAgent.trim() === '') return true;
-  return BOT_UA_PATTERNS.some((pattern) => pattern.test(userAgent));
+  return BOT_UA_PATTERNS.some((p) => p.test(userAgent));
 }
+
+// ─── Thompson Sampling (Multi-Armed Bandit) ───────────────────────────────────
+
+function gammaSample(shape: number): number {
+  if (shape < 1) {
+    return gammaSample(1 + shape) * Math.pow(Math.random(), 1 / shape);
+  }
+  const d = shape - 1 / 3;
+  const c = 1 / Math.sqrt(9 * d);
+  for (;;) {
+    let x: number, v: number;
+    do {
+      // Box-Muller normal sample
+      x = Math.sqrt(-2 * Math.log(Math.random())) * Math.cos(2 * Math.PI * Math.random());
+      v = 1 + c * x;
+    } while (v <= 0);
+    v = v * v * v;
+    const u = Math.random();
+    if (u < 1 - 0.0331 * x * x * x * x) return d * v;
+    if (Math.log(u) < 0.5 * x * x + d * (1 - v + Math.log(v))) return d * v;
+  }
+}
+
+function betaSample(alpha: number, beta: number): number {
+  const x = gammaSample(alpha);
+  const y = gammaSample(beta);
+  return x / (x + y);
+}
+
+function selectVariantBandit(variants: CampaignVariant[]): CampaignVariant {
+  // Thompson Sampling: each variant draws from Beta(conversions+1, clicks-conversions+1)
+  let bestVariant = variants[0];
+  let bestSample = -1;
+  for (const v of variants) {
+    const alpha = (v.cumulativeConversions ?? 0) + 1;
+    const beta = Math.max((v.cumulativeClicks ?? 0) - (v.cumulativeConversions ?? 0) + 1, 1);
+    const sample = betaSample(alpha, beta);
+    if (sample > bestSample) {
+      bestSample = sample;
+      bestVariant = v;
+    }
+  }
+  return bestVariant;
+}
+
+// ─── Weighted Random (static A/B split) ──────────────────────────────────────
+
+function selectVariant(variants: CampaignVariant[]): CampaignVariant {
+  const random = Math.random() * 100;
+  let cumulative = 0;
+  for (const variant of variants) {
+    cumulative += variant.trafficWeight;
+    if (random <= cumulative) return variant;
+  }
+  return variants[0];
+}
+
+// ─── Device / OS / Browser detection ─────────────────────────────────────────
+
+function detectDevice(ua: string): 'MOBILE' | 'DESKTOP' | 'TABLET' {
+  if (/(tablet|ipad|playbook|silk)|(android(?!.*mobi))/i.test(ua)) return 'TABLET';
+  if (/mobile|iphone|ipod|android|blackberry|opera mini|windows phone/i.test(ua)) return 'MOBILE';
+  return 'DESKTOP';
+}
+
+function detectOS(ua: string): string {
+  const u = ua.toLowerCase();
+  if (u.includes('windows')) return 'Windows';
+  if (u.includes('mac os')) return 'macOS';
+  if (u.includes('iphone') || u.includes('ipad')) return 'iOS';
+  if (u.includes('android')) return 'Android';
+  if (u.includes('linux')) return 'Linux';
+  return 'Unknown';
+}
+
+function detectBrowser(ua: string): string {
+  const u = ua.toLowerCase();
+  if (u.includes('chrome') && !u.includes('edg')) return 'Chrome';
+  if (u.includes('safari') && !u.includes('chrome')) return 'Safari';
+  if (u.includes('firefox')) return 'Firefox';
+  if (u.includes('edg')) return 'Edge';
+  if (u.includes('opera') || u.includes('opr')) return 'Opera';
+  return 'Unknown';
+}
+
+function detectLanguage(acceptLanguage: string): string {
+  // Extract primary language tag: "en-US,en;q=0.9" → "en"
+  const primary = acceptLanguage.split(',')[0]?.split(';')[0]?.trim();
+  return primary?.slice(0, 5) || 'Unknown';
+}
+
+// ─── Supabase helpers ─────────────────────────────────────────────────────────
+
+async function getCampaign(slug: string): Promise<CampaignData | null> {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !supabaseKey) return getMockCampaign(slug);
+
+  try {
+    const res = await fetch(
+      `${supabaseUrl}/rest/v1/Campaign` +
+        `?slug=eq.${slug}&status=eq.ACTIVE` +
+        `&select=*,variants:Variant(*)`,
+      {
+        headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` },
+      }
+    );
+    const data = await res.json();
+    if (!data || data.length === 0) return getMockCampaign(slug);
+    return data[0];
+  } catch {
+    return getMockCampaign(slug);
+  }
+}
+
+async function logClick(payload: Record<string, unknown>): Promise<void> {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !supabaseKey) return;
+
+  await fetch(`${supabaseUrl}/rest/v1/Click`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      apikey: supabaseKey,
+      Authorization: `Bearer ${supabaseKey}`,
+      Prefer: 'return=minimal',
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+async function incrementVariantClicks(variantId: string, campaignId: string): Promise<void> {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !supabaseKey) return;
+
+  // Use Supabase RPC or raw SQL increment — Supabase REST doesn't support atomic increments
+  // directly, so we use a workaround: fetch current value and PATCH with +1.
+  // For high-traffic, upgrade to a Postgres function via RPC.
+  const res = await fetch(
+    `${supabaseUrl}/rest/v1/Variant?id=eq.${variantId}&campaignId=eq.${campaignId}&select=cumulativeClicks`,
+    { headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` } }
+  );
+  const rows = await res.json();
+  if (!Array.isArray(rows) || rows.length === 0) return;
+  const current = rows[0].cumulativeClicks ?? 0;
+
+  await fetch(`${supabaseUrl}/rest/v1/Variant?id=eq.${variantId}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      apikey: supabaseKey,
+      Authorization: `Bearer ${supabaseKey}`,
+    },
+    body: JSON.stringify({ cumulativeClicks: current + 1 }),
+  });
+}
+
+// ─── Main handler ─────────────────────────────────────────────────────────────
 
 export async function GET(request: NextRequest) {
   const startTime = Date.now();
@@ -97,29 +245,43 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Missing campaign parameter' }, { status: 400 });
     }
 
-    // Get user context
+    // Collect request context
     const ipAddress =
-      request.headers.get('x-forwarded-for') ||
+      request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
       request.headers.get('x-real-ip') ||
       'unknown';
     const userAgent = request.headers.get('user-agent') || '';
     const referrer = request.headers.get('referer') || '';
     const country = request.headers.get('cf-ipcountry') || undefined;
+    const acceptLanguage = request.headers.get('accept-language') || '';
 
     const device = detectDevice(userAgent);
     const os = detectOS(userAgent);
     const browser = detectBrowser(userAgent);
+    const language = acceptLanguage ? detectLanguage(acceptLanguage) : undefined;
     const bot = isKnownBot(userAgent);
+
+    // Rate limit real traffic only (bots are logged but not rate-limited — they're already marked)
+    if (!bot && isRateLimited(ipAddress)) {
+      return new NextResponse('Too Many Requests', { status: 429 });
+    }
 
     // Fetch campaign
     const campaign = await getCampaign(campaignSlug);
-
     if (!campaign) {
       return NextResponse.json({ error: 'Campaign not found' }, { status: 404 });
     }
 
-    // Geo-gate: if campaign requires CH and visitor is not CH, redirect to geo-blocked page.
-    // Only applied to non-bot traffic (bots don't need the compliance message).
+    // ── Scheduling check ──────────────────────────────────────────────────────
+    const now = new Date();
+    if (campaign.startsAt && now < new Date(campaign.startsAt)) {
+      return new NextResponse('Campaign not yet active', { status: 404 });
+    }
+    if (campaign.endsAt && now > new Date(campaign.endsAt)) {
+      return new NextResponse('Campaign has ended', { status: 410 });
+    }
+
+    // ── Geo-gate ──────────────────────────────────────────────────────────────
     if (campaign.geoGate && !bot && country && country !== 'CH') {
       return NextResponse.redirect(new URL('/geo-blocked', request.url), {
         status: 302,
@@ -127,46 +289,73 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // Select variant
-    let selectedVariant;
+    // ── Variant selection ─────────────────────────────────────────────────────
+    let selectedVariant: CampaignVariant;
     if (forceVariant) {
       selectedVariant =
         campaign.variants.find((v) => v.slug === forceVariant) || campaign.variants[0];
+    } else if (campaign.optimizationMode === 'BANDIT') {
+      selectedVariant = selectVariantBandit(campaign.variants);
     } else {
       selectedVariant = selectVariant(campaign.variants);
     }
 
-    // Generate click ID
+    // ── Click ID + params ─────────────────────────────────────────────────────
     const clickId = nanoid(16);
 
-    // Extract UTM parameters
     const utmSource = searchParams.get('utm_source') || undefined;
     const utmMedium = searchParams.get('utm_medium') || undefined;
     const utmCampaign = searchParams.get('utm_campaign') || undefined;
     const utmContent = searchParams.get('utm_content') || undefined;
     const utmTerm = searchParams.get('utm_term') || undefined;
-
-    // Extract vibe (ad creative identifier)
     const vibe = searchParams.get('vibe') || undefined;
+    const cost = searchParams.get('cost') || undefined;
+    const externalId =
+      searchParams.get('externalid') || searchParams.get('extid') || undefined;
 
-    // Capture remaining custom params (excluding reserved keys)
-    const RESERVED = new Set(['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'campaign', 'variant', 'vibe']);
+    // Capture remaining custom params (exclude all reserved keys)
+    const RESERVED = new Set([
+      'utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term',
+      'campaign', 'variant', 'vibe', 'cost', 'externalid', 'extid',
+    ]);
     const customParams: Record<string, string> = {};
     searchParams.forEach((value, key) => {
       if (!RESERVED.has(key)) customParams[key] = value;
     });
 
-    const clickData: ClickData = {
+    // ── Token resolution ──────────────────────────────────────────────────────
+    const resolvedOfferUrl = resolveTokens(campaign.offerUrl || '', {
       clickId,
+      country,
+      device,
+      browser,
+      os,
+      ip: ipAddress,
+      referrer: referrer || undefined,
+      language,
+      utmSource,
+      utmMedium,
+      utmCampaign,
+      utmContent,
+      utmTerm,
+      vibe,
+      cost,
+      externalId,
+      customParams,
+    });
+
+    // ── Async: log click ──────────────────────────────────────────────────────
+    logClick({
+      id: clickId,
       campaignId: campaign.id,
       variantId: selectedVariant.id,
-      variantSlug: selectedVariant.slug,
       ipAddress,
       userAgent,
       country,
       device,
       os,
       browser,
+      language,
       referrer: referrer || undefined,
       utmSource,
       utmMedium,
@@ -174,17 +363,19 @@ export async function GET(request: NextRequest) {
       utmContent,
       utmTerm,
       vibe,
+      cost,
+      externalId,
       isBot: bot,
       customParams: Object.keys(customParams).length > 0 ? customParams : undefined,
-      timestamp: new Date().toISOString(),
-    };
+      createdAt: new Date().toISOString(),
+    }).catch((err) => console.error('Failed to log click:', err));
 
-    // Log click async, non-blocking
-    logClickToDatabase(clickData).catch((err) => {
-      console.error('Failed to log click:', err);
-    });
+    // ── Async: increment variant clicks for MAB ───────────────────────────────
+    if (campaign.optimizationMode === 'BANDIT' && !bot) {
+      incrementVariantClicks(selectedVariant.id, campaign.id).catch(() => {});
+    }
 
-    // Build landing page URL
+    // ── Build lander redirect URL ─────────────────────────────────────────────
     const isStaticPage =
       selectedVariant.theme &&
       (selectedVariant.theme as Record<string, string>).type === 'custom';
@@ -195,12 +386,16 @@ export async function GET(request: NextRequest) {
         `/landing-pages/${selectedVariant.slug}/index.html`,
         request.url
       );
-      if (campaign.offerUrl) {
-        landingPageUrl.searchParams.set('offer', campaign.offerUrl);
+      // Pass resolved offer URL so static lander can use /api/click?cid= or ?offer=
+      if (resolvedOfferUrl) {
+        landingPageUrl.searchParams.set('offer', resolvedOfferUrl);
       }
     } else {
       landingPageUrl = new URL('/lp', request.url);
       landingPageUrl.searchParams.set('v', selectedVariant.slug);
+      if (resolvedOfferUrl) {
+        landingPageUrl.searchParams.set('offer', resolvedOfferUrl);
+      }
     }
     landingPageUrl.searchParams.set('c', clickId);
 
@@ -215,93 +410,31 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     console.error('Click tracking error:', error);
-    const fallbackUrl = new URL('/lp', request.url);
-    return NextResponse.redirect(fallbackUrl, { status: 302 });
+    return NextResponse.redirect(new URL('/lp', request.url), { status: 302 });
   }
 }
 
-// ============================================
-// HELPER FUNCTIONS
-// ============================================
-
-function detectDevice(userAgent: string): 'MOBILE' | 'DESKTOP' | 'TABLET' {
-  const ua = userAgent.toLowerCase();
-  if (/(tablet|ipad|playbook|silk)|(android(?!.*mobi))/i.test(ua)) return 'TABLET';
-  if (/mobile|iphone|ipod|android|blackberry|opera mini|windows phone/i.test(ua)) return 'MOBILE';
-  return 'DESKTOP';
-}
-
-function detectOS(userAgent: string): string {
-  const ua = userAgent.toLowerCase();
-  if (ua.includes('windows')) return 'Windows';
-  if (ua.includes('mac os')) return 'macOS';
-  if (ua.includes('iphone') || ua.includes('ipad')) return 'iOS';
-  if (ua.includes('android')) return 'Android';
-  if (ua.includes('linux')) return 'Linux';
-  return 'Unknown';
-}
-
-function detectBrowser(userAgent: string): string {
-  const ua = userAgent.toLowerCase();
-  if (ua.includes('chrome') && !ua.includes('edg')) return 'Chrome';
-  if (ua.includes('safari') && !ua.includes('chrome')) return 'Safari';
-  if (ua.includes('firefox')) return 'Firefox';
-  if (ua.includes('edg')) return 'Edge';
-  if (ua.includes('opera') || ua.includes('opr')) return 'Opera';
-  return 'Unknown';
-}
-
-function selectVariant(variants: CampaignVariant[]): CampaignVariant {
-  const random = Math.random() * 100;
-  let cumulative = 0;
-  for (const variant of variants) {
-    cumulative += variant.trafficWeight;
-    if (random <= cumulative) return variant;
-  }
-  return variants[0];
-}
-
-async function getCampaign(slug: string): Promise<CampaignData | null> {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!supabaseUrl || !supabaseKey) {
-    return getMockCampaign(slug);
-  }
-
-  try {
-    const response = await fetch(
-      `${supabaseUrl}/rest/v1/Campaign?slug=eq.${slug}&select=*,variants:Variant(*)&status=eq.ACTIVE`,
-      {
-        headers: {
-          apikey: supabaseKey,
-          Authorization: `Bearer ${supabaseKey}`,
-        },
-      }
-    );
-
-    const data = await response.json();
-    if (!data || data.length === 0) return getMockCampaign(slug);
-    return data[0];
-  } catch {
-    return getMockCampaign(slug);
-  }
-}
+// ─── Mock campaign (dev/fallback) ─────────────────────────────────────────────
 
 function getMockCampaign(slug: string): CampaignData {
   return {
     id: 'camp_123',
     slug,
     name: 'Swiss Sports Q1 2024',
-    offerUrl: 'https://www.gomedia1000.com/redirect.aspx',
+    offerUrl: 'https://www.gomedia1000.com/redirect.aspx?clickid={clickid}',
     offerId: '4452',
     geoGate: false,
+    optimizationMode: 'STATIC',
+    startsAt: null,
+    endsAt: null,
     variants: [
       {
         id: 'var_a',
         slug: 'sports-athletes',
         name: 'Variant A - Sports Athletes',
         trafficWeight: 50,
+        cumulativeClicks: 0,
+        cumulativeConversions: 0,
         theme: { type: 'sports', primaryColor: '#3b82f6', ctaColor: '#84cc16' },
         content: { headline: 'Hier wettet die Schweiz', subheadline: '200% bis zu 400 CHF' },
       },
@@ -310,58 +443,11 @@ function getMockCampaign(slug: string): CampaignData {
         slug: 'casino-excitement',
         name: 'Variant B - Casino Excitement',
         trafficWeight: 50,
+        cumulativeClicks: 0,
+        cumulativeConversions: 0,
         theme: { type: 'casino', primaryColor: '#ef4444', ctaColor: '#10b981' },
         content: { headline: 'Dein Glück wartet', subheadline: '₺10,000 Bonus' },
       },
     ],
   };
-}
-
-async function logClickToDatabase(clickData: ClickData): Promise<void> {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!supabaseUrl || !supabaseKey) {
-    console.warn('Supabase credentials not configured — click not persisted');
-    return;
-  }
-
-  try {
-    const response = await fetch(`${supabaseUrl}/rest/v1/Click`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        apikey: supabaseKey,
-        Authorization: `Bearer ${supabaseKey}`,
-        Prefer: 'return=minimal',
-      },
-      body: JSON.stringify({
-        id: clickData.clickId,
-        campaignId: clickData.campaignId,
-        variantId: clickData.variantId,
-        ipAddress: clickData.ipAddress,
-        userAgent: clickData.userAgent,
-        country: clickData.country,
-        device: clickData.device,
-        os: clickData.os,
-        browser: clickData.browser,
-        referrer: clickData.referrer,
-        utmSource: clickData.utmSource,
-        utmMedium: clickData.utmMedium,
-        utmCampaign: clickData.utmCampaign,
-        utmContent: clickData.utmContent,
-        utmTerm: clickData.utmTerm,
-        vibe: clickData.vibe ?? null,
-        isBot: clickData.isBot,
-        customParams: clickData.customParams,
-        createdAt: clickData.timestamp,
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Database insert failed: ${response.statusText}`);
-    }
-  } catch (error) {
-    console.error('Database logging error:', error);
-  }
 }

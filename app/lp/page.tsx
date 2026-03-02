@@ -76,9 +76,8 @@ function LandingPageContent() {
 
   const handleCTAClick = () => {
     if (!clickId) return;
-    trackCTAClick(clickId);
-    const offerUrl = buildOfferUrl(clickId);
-    window.location.href = offerUrl;
+    // /api/click handles CTA tracking + token-resolved offer redirect server-side
+    window.location.href = `/api/click?cid=${encodeURIComponent(clickId)}`;
   };
 
   if (!variant) {
@@ -242,31 +241,6 @@ async function trackPageView(clickId: string, variant: string) {
   } catch (error) {
     console.error('Failed to track page view:', error);
   }
-}
-
-async function trackCTAClick(clickId: string) {
-  try {
-    await fetch('/api/track-event', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        clickId,
-        event: 'cta_click',
-        timestamp: new Date().toISOString(),
-      }),
-    });
-  } catch (error) {
-    console.error('Failed to track CTA click:', error);
-  }
-}
-
-function buildOfferUrl(clickId: string): string {
-  const url = new URL('https://www.gomedia1000.com/redirect.aspx');
-  url.searchParams.set('pid', '4452');
-  url.searchParams.set('bid', '1522');
-  url.searchParams.set('lpid', '366');
-  url.searchParams.set('clickid', clickId);
-  return url.toString();
 }
 
 // ============================================

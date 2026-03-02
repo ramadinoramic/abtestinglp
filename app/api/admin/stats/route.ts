@@ -14,8 +14,9 @@ function supabaseHeaders(key: string) {
   };
 }
 
-// Abramowitz & Stegun approximation for standard normal CDF (accurate to ~4 decimal places).
-// Used for z-test statistical significance without any npm dependency.
+// ─── Statistical helpers ──────────────────────────────────────────────────────
+
+// Abramowitz & Stegun approximation for standard normal CDF (~4 decimal places).
 function normalCDF(z: number): number {
   const t = 1 / (1 + 0.2316419 * Math.abs(z));
   const poly =
@@ -28,11 +29,57 @@ function normalCDF(z: number): number {
   return z >= 0 ? cdf : 1 - cdf;
 }
 
+// Gamma distribution sampler — Marsaglia & Tsang method.
+function gammaSample(shape: number): number {
+  if (shape < 1) {
+    return gammaSample(1 + shape) * Math.pow(Math.random(), 1 / shape);
+  }
+  const d = shape - 1 / 3;
+  const c = 1 / Math.sqrt(9 * d);
+  for (;;) {
+    let x: number, v: number;
+    do {
+      x = Math.sqrt(-2 * Math.log(Math.random())) * Math.cos(2 * Math.PI * Math.random());
+      v = 1 + c * x;
+    } while (v <= 0);
+    v = v * v * v;
+    const u = Math.random();
+    if (u < 1 - 0.0331 * x * x * x * x) return d * v;
+    if (Math.log(u) < 0.5 * x * x + d * (1 - v + Math.log(v))) return d * v;
+  }
+}
+
+function betaSample(alpha: number, beta: number): number {
+  const x = gammaSample(alpha);
+  const y = gammaSample(beta);
+  return x / (x + y);
+}
+
+// Monte Carlo: P(challenger has higher true conversion rate than control).
+// Uses Beta-Binomial model with Jeffrey's prior (alpha=0.5, beta=0.5).
+function bayesianProbBetterThan(
+  convControl: number, nControl: number,
+  convChallenger: number, nChallenger: number,
+  samples = 1500
+): number {
+  if (nControl === 0 || nChallenger === 0) return 0.5;
+  let wins = 0;
+  for (let i = 0; i < samples; i++) {
+    const sControl = betaSample(convControl + 0.5, nControl - convControl + 0.5);
+    const sChallenger = betaSample(convChallenger + 0.5, nChallenger - convChallenger + 0.5);
+    if (sChallenger > sControl) wins++;
+  }
+  return wins / samples;
+}
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
 type RawClick = {
   id: string;
   variantId: string;
   country: string | null;
   device: string | null;
+  language: string | null;
   ctaClicked: boolean;
   landed: boolean;
   converted: boolean;
@@ -51,10 +98,12 @@ type RawVariant = {
 };
 
 type RawCampaign = {
+  name: string;
   adSpend: number | null;
 };
 
-// GET /api/admin/stats?campaignId=xxx&days=30
+// ─── GET /api/admin/stats?campaignId=xxx&days=30 ──────────────────────────────
+
 export async function GET(request: NextRequest) {
   const { url, key, configured } = getSupabaseConfig();
   if (!configured) {
@@ -70,17 +119,17 @@ export async function GET(request: NextRequest) {
   const days = parseInt(searchParams.get('days') ?? '30', 10);
 
   try {
-    // Build date filter
     let dateFilter = '';
     if (days > 0) {
       const from = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
       dateFilter = `&createdAt=gte.${from}`;
     }
 
-    // Fetch clicks, variants, and campaign in parallel
     const [clicksRes, variantsRes, campaignRes] = await Promise.all([
       fetch(
-        `${url}/rest/v1/Click?campaignId=eq.${campaignId}${dateFilter}&select=id,variantId,country,device,ctaClicked,landed,converted,isBot,vibe,createdAt,conversion:Conversion(payoutAmount,playerValue,eventType)`,
+        `${url}/rest/v1/Click?campaignId=eq.${campaignId}${dateFilter}` +
+          `&select=id,variantId,country,device,language,ctaClicked,landed,converted,isBot,vibe,createdAt,` +
+          `conversion:Conversion(payoutAmount,playerValue,eventType)`,
         { headers: supabaseHeaders(key!) }
       ),
       fetch(
@@ -88,7 +137,7 @@ export async function GET(request: NextRequest) {
         { headers: supabaseHeaders(key!) }
       ),
       fetch(
-        `${url}/rest/v1/Campaign?id=eq.${campaignId}&select=adSpend`,
+        `${url}/rest/v1/Campaign?id=eq.${campaignId}&select=name,adSpend`,
         { headers: supabaseHeaders(key!) }
       ),
     ]);
@@ -97,8 +146,9 @@ export async function GET(request: NextRequest) {
     const variants: RawVariant[] = variantsRes.ok ? await variantsRes.json() : [];
     const campaignData: RawCampaign[] = campaignRes.ok ? await campaignRes.json() : [];
     const adSpend: number | null = campaignData[0]?.adSpend ?? null;
+    const campaignName: string = campaignData[0]?.name ?? '';
 
-    // ── Filter bots — all stats are based on real human traffic ──────────────
+    // ── Filter bots ───────────────────────────────────────────────────────────
     const realClicks = clicks.filter((c) => !c.isBot);
     const botClicks = clicks.length - realClicks.length;
 
@@ -118,7 +168,6 @@ export async function GET(request: NextRequest) {
       impressions,
       landingRate: totalClicks > 0 ? (impressions / totalClicks) * 100 : 0,
       ctaClicks,
-      // CTR relative to impressions (real humans who saw the lander); fall back to totalClicks if no impressions yet
       ctr: (impressions > 0 ? impressions : totalClicks) > 0
         ? (ctaClicks / (impressions > 0 ? impressions : totalClicks)) * 100
         : 0,
@@ -186,10 +235,24 @@ export async function GET(request: NextRequest) {
         pct: totalClicks > 0 ? Math.round((count / totalClicks) * 100) : 0,
       }));
 
+    // ── Language breakdown (top 6) ────────────────────────────────────────────
+    const languageMap: Record<string, number> = {};
+    for (const c of realClicks) {
+      if (c.language) languageMap[c.language] = (languageMap[c.language] ?? 0) + 1;
+    }
+    const languages = Object.entries(languageMap)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6)
+      .map(([language, count]) => ({
+        language,
+        clicks: count,
+        pct: totalClicks > 0 ? Math.round((count / totalClicks) * 100) : 0,
+      }));
+
     // ── Daily trend ───────────────────────────────────────────────────────────
     const dailyMap: Record<string, { clicks: number; conversions: number }> = {};
     for (const c of realClicks) {
-      const date = c.createdAt.slice(0, 10); // YYYY-MM-DD
+      const date = c.createdAt.slice(0, 10);
       if (!dailyMap[date]) dailyMap[date] = { clicks: 0, conversions: 0 };
       dailyMap[date].clicks++;
       if (c.converted) dailyMap[date].conversions++;
@@ -201,16 +264,16 @@ export async function GET(request: NextRequest) {
     // ── Vibe breakdown ────────────────────────────────────────────────────────
     const vibeMap: Record<string, { clicks: number; impressions: number; ctaClicks: number; conversions: number; payout: number }> = {};
     for (const c of realClicks) {
-      const key = c.vibe || '(no vibe)';
-      if (!vibeMap[key]) vibeMap[key] = { clicks: 0, impressions: 0, ctaClicks: 0, conversions: 0, payout: 0 };
-      vibeMap[key].clicks++;
-      if (c.landed) vibeMap[key].impressions++;
-      if (c.ctaClicked) vibeMap[key].ctaClicks++;
-      if (c.converted) vibeMap[key].conversions++;
-      vibeMap[key].payout += parseFloat(c.conversion?.payoutAmount ?? '0');
+      const vk = c.vibe || '(no vibe)';
+      if (!vibeMap[vk]) vibeMap[vk] = { clicks: 0, impressions: 0, ctaClicks: 0, conversions: 0, payout: 0 };
+      vibeMap[vk].clicks++;
+      if (c.landed) vibeMap[vk].impressions++;
+      if (c.ctaClicked) vibeMap[vk].ctaClicks++;
+      if (c.converted) vibeMap[vk].conversions++;
+      vibeMap[vk].payout += parseFloat(c.conversion?.payoutAmount ?? '0');
     }
     const vibes = Object.entries(vibeMap)
-      .filter(([key]) => key !== '(no vibe)')
+      .filter(([k]) => k !== '(no vibe)')
       .map(([vibe, d]) => {
         const base = d.impressions > 0 ? d.impressions : d.clicks;
         return {
@@ -226,17 +289,22 @@ export async function GET(request: NextRequest) {
       })
       .sort((a, b) => b.conversions - a.conversions);
 
-    // ── Statistical significance (z-test for two top proportions) ─────────────
-    // Works for any number of variants: compare the top-2 by conversion rate.
-    let significance: { isSignificant: boolean; confidence: number; winner: string | null; leader: string | null } = {
+    // ── Statistical significance (z-test) + Bayesian ─────────────────────────
+    let significance: {
+      isSignificant: boolean;
+      confidence: number;
+      winner: string | null;
+      leader: string | null;
+      bayesian: { probChallengerWins: number; controlName: string; challengerName: string } | null;
+    } = {
       isSignificant: false,
       confidence: 0,
       winner: null,
       leader: null,
+      bayesian: null,
     };
 
     if (variantStats.length >= 2) {
-      // Sort by conversion rate descending to find the two leaders
       const sorted = [...variantStats].sort((a, b) => b.conversionRate - a.conversionRate);
       const best = sorted[0];
       const second = sorted[1];
@@ -254,18 +322,51 @@ export async function GET(request: NextRequest) {
         const z = se > 0 ? Math.abs(p1 - p2) / se : 0;
         const confidence = Math.round((2 * normalCDF(z) - 1) * 100);
         const isSignificant = confidence >= 95;
-        significance = {
-          isSignificant,
-          confidence,
-          winner: isSignificant ? best.name : null,
-          leader: best.name,
-        };
+        significance.isSignificant = isSignificant;
+        significance.confidence = confidence;
+        significance.winner = isSignificant ? best.name : null;
+      }
+
+      // Bayesian: compare control vs best challenger
+      const control = variantStats.find((v) => v.isControl) ?? sorted[sorted.length - 1];
+      const challenger = sorted.find((v) => v.id !== control.id) ?? sorted[0];
+      const probChallengerWins = bayesianProbBetterThan(
+        control.conversions, control.clicks,
+        challenger.conversions, challenger.clicks
+      );
+      significance.bayesian = {
+        probChallengerWins: Math.round(probChallengerWins * 100),
+        controlName: control.name,
+        challengerName: challenger.name,
+      };
+
+      // Significance webhook (optional env var)
+      const webhookUrl = process.env.SIGNIFICANCE_WEBHOOK_URL;
+      if (webhookUrl && significance.isSignificant && significance.winner) {
+        const isSlack = webhookUrl.includes('hooks.slack.com');
+        const body = isSlack
+          ? JSON.stringify({ text: `Test complete! Campaign *${campaignName}* — *${significance.winner}* wins with ${significance.confidence}% confidence.` })
+          : JSON.stringify({ campaignId, campaignName, winner: significance.winner, confidence: significance.confidence });
+        fetch(webhookUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body,
+        }).catch(() => {});
       }
     } else if (variantStats.length === 1) {
       significance.leader = variantStats[0].name;
     }
 
-    return NextResponse.json({ overview, variants: variantStats, countries, devices, daily, vibes, significance });
+    return NextResponse.json({
+      overview,
+      variants: variantStats,
+      countries,
+      devices,
+      languages,
+      daily,
+      vibes,
+      significance,
+    });
   } catch (error) {
     console.error('[stats GET]', error);
     return NextResponse.json({ error: String(error) }, { status: 500 });

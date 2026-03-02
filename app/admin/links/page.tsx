@@ -62,11 +62,36 @@ function QrModal({ url, onClose }: { url: string; onClose: () => void }) {
   );
 }
 
+// Token reference data
+const URL_TOKENS = [
+  { token: '{clickid}', description: 'Unique click ID generated at tracking time', example: 'xK9mQ2pLnR4vT8wY' },
+  { token: '{country}', description: 'ISO 3166-1 alpha-2 country code', example: 'CH' },
+  { token: '{device}', description: 'Device type', example: 'mobile · desktop · tablet' },
+  { token: '{browser}', description: 'Browser name', example: 'chrome · safari · firefox' },
+  { token: '{os}', description: 'Operating system', example: 'ios · android · windows' },
+  { token: '{language}', description: 'Browser language', example: 'en · de · fr' },
+  { token: '{ip}', description: 'Visitor IP address', example: '92.107.x.x' },
+  { token: '{referrer}', description: 'URL-encoded referring page', example: 'https%3A%2F%2Ffacebook.com%2F' },
+  { token: '{referrerdomain}', description: 'Referring domain only', example: 'facebook.com' },
+  { token: '{utm_source}', description: 'UTM source', example: 'facebook' },
+  { token: '{utm_medium}', description: 'UTM medium', example: 'cpc' },
+  { token: '{utm_campaign}', description: 'UTM campaign', example: 'summer2025' },
+  { token: '{utm_content}', description: 'UTM content', example: 'image-carousel' },
+  { token: '{utm_term}', description: 'UTM term', example: 'sports-betting' },
+  { token: '{vibe}', description: 'Ad creative identifier', example: 'luxury_chalet' },
+  { token: '{cost}', description: 'Per-click cost from traffic source (?cost=0.08)', example: '0.08' },
+  { token: '{externalid}', description: 'Traffic source click ID (?externalid=FB_xxx)', example: 'IwAR2xyz...' },
+  { token: '{var1} … {var10}', description: 'Custom numbered variables (?var1=abc)', example: 'abc123' },
+  { token: '{var:name}', description: 'Named custom variable (?myvar=val)', example: 'val' },
+  { token: '{cachebuster}', description: 'Random string to prevent caching', example: 'a3f9k2' },
+];
+
 export default function LinksPage() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [baseUrl, setBaseUrl] = useState('');
   const [qrUrl, setQrUrl] = useState<string | null>(null);
   const [generatingFor, setGeneratingFor] = useState<string | null>(null);
+  const [tokensOpen, setTokensOpen] = useState(false);
 
   // UTM Builder state
   const [selectedCampaignId, setSelectedCampaignId] = useState('');
@@ -128,6 +153,10 @@ export default function LinksPage() {
   const postbackUrl = `${baseUrl}/api/postback?clickid={CLICKID}&event={EVENT}&payout={PAYOUT}&currency={CURRENCY}`;
   const trackerScript = `<script src="${baseUrl}/tracker.js" async></script>`;
 
+  const pixelImgTag = `<img src="${baseUrl}/api/pixel?cid={CLICKID}&payout={PAYOUT}&event={EVENT}" width="1" height="1" style="display:none" />`;
+  const pixelScriptTag =
+    `<script>\n  var i=new Image();\n  i.src="${baseUrl}/api/pixel?cid={CLICKID}&payout={PAYOUT}&event={EVENT}";\n</script>`;
+
   return (
     <div className="min-h-screen bg-gray-950 text-white">
       {qrUrl && <QrModal url={qrUrl} onClose={() => setQrUrl(null)} />}
@@ -139,10 +168,7 @@ export default function LinksPage() {
           <p className="text-sm text-gray-400 mt-0.5">All your tracking links and integration tools in one place.</p>
         </div>
         <div className="flex items-center gap-3">
-          <Link
-            href="/admin"
-            className="text-sm text-gray-400 hover:text-white transition-colors"
-          >
+          <Link href="/admin" className="text-sm text-gray-400 hover:text-white transition-colors">
             ← Campaigns
           </Link>
           <Link
@@ -160,7 +186,7 @@ export default function LinksPage() {
         <section>
           <h2 className="text-lg font-semibold text-white mb-1">Campaign Links</h2>
           <p className="text-sm text-gray-400 mb-4">
-            Use the short URL in your ads — it's easier to share and still tracks everything.
+            Use the short URL in your ads — it&apos;s easier to share and still tracks everything.
           </p>
           <div className="rounded-xl border border-gray-800 overflow-hidden">
             <table className="w-full text-sm">
@@ -243,7 +269,6 @@ export default function LinksPage() {
             </div>
           </div>
 
-          {/* Token reference */}
           <div className="mt-4 rounded-xl border border-gray-800 overflow-hidden">
             <table className="w-full text-sm">
               <thead>
@@ -273,7 +298,63 @@ export default function LinksPage() {
           </div>
         </section>
 
-        {/* ── Section 3: Tracker Script ─────────────────────────────── */}
+        {/* ── Section 3: Conversion Pixel ───────────────────────────── */}
+        <section>
+          <h2 className="text-lg font-semibold text-white mb-1">Conversion Tracking Pixel</h2>
+          <p className="text-sm text-gray-400 mb-4">
+            Use when your network doesn&apos;t support S2S postback. Place this on the offer&apos;s
+            thank-you / confirmation page. The pixel fires a 1×1 transparent GIF and records the
+            conversion silently.
+          </p>
+          <div className="space-y-3">
+            <div>
+              <p className="text-xs text-gray-500 mb-1.5">HTML img tag</p>
+              <div className="rounded-xl border border-gray-800 bg-gray-900/40 p-4 flex items-start gap-3">
+                <code className="flex-1 font-mono text-xs text-blue-300 break-all leading-relaxed">
+                  {pixelImgTag}
+                </code>
+                <CopyButton text={pixelImgTag} />
+              </div>
+            </div>
+            <div>
+              <p className="text-xs text-gray-500 mb-1.5">JavaScript version</p>
+              <div className="rounded-xl border border-gray-800 bg-gray-900/40 p-4 flex items-start gap-3">
+                <code className="flex-1 font-mono text-xs text-blue-300 break-all leading-relaxed whitespace-pre">
+                  {pixelScriptTag}
+                </code>
+                <CopyButton text={pixelScriptTag} />
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4 rounded-xl border border-gray-800 overflow-hidden">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-800 bg-gray-900/60">
+                  <th className="text-left px-4 py-2.5 text-gray-400 font-medium">Token</th>
+                  <th className="text-left px-4 py-2.5 text-gray-400 font-medium">Replace with</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-800/50">
+                {[
+                  ['{CLICKID}', "Your platform's click ID — the ?c= value passed to your lander"],
+                  ['{PAYOUT}', '(Optional) Payout amount e.g. 35.00'],
+                  ['{CURRENCY}', '(Optional) Currency code, default EUR'],
+                  ['{EVENT}', '(Optional) registration · ftd · redeposit — default ftd'],
+                ].map(([token, desc]) => (
+                  <tr key={token} className="hover:bg-gray-900/30">
+                    <td className="px-4 py-2.5">
+                      <code className="font-mono text-xs text-amber-400">{token}</code>
+                    </td>
+                    <td className="px-4 py-2.5 text-gray-300 text-xs">{desc}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        {/* ── Section 4: Tracker Script ─────────────────────────────── */}
         <section>
           <h2 className="text-lg font-semibold text-white mb-1">Tracker Script</h2>
           <p className="text-sm text-gray-400 mb-4">
@@ -284,18 +365,60 @@ export default function LinksPage() {
             <CopyButton text={trackerScript} />
           </div>
           <p className="mt-2 text-xs text-gray-500">
-            The script reads the <code className="text-gray-400">?c=</code> click ID from the URL automatically. No configuration needed.
+            The script reads the <code className="text-gray-400">?c=</code> click ID from the URL automatically.
+            CTA button must have <code className="text-gray-400">id=&quot;cta-btn&quot;</code>.
           </p>
         </section>
 
-        {/* ── Section 4: UTM Link Builder ───────────────────────────── */}
+        {/* ── Section 5: URL Token Reference (collapsible) ─────────── */}
+        <section>
+          <button
+            onClick={() => setTokensOpen((v) => !v)}
+            className="flex items-center gap-2 text-lg font-semibold text-white hover:text-gray-300 transition-colors w-full text-left"
+          >
+            <span>{tokensOpen ? '▾' : '▸'}</span>
+            Offer URL Token Reference
+          </button>
+          <p className="text-sm text-gray-400 mt-1 mb-3">
+            Use these tokens in your Campaign&apos;s <strong className="text-gray-200">Offer URL</strong> field.
+            They are replaced with real values at click time — just like Voluum.
+          </p>
+
+          {tokensOpen && (
+            <div className="rounded-xl border border-gray-800 overflow-hidden">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-800 bg-gray-900/60">
+                    <th className="text-left px-4 py-2.5 text-gray-400 font-medium w-44">Token</th>
+                    <th className="text-left px-4 py-2.5 text-gray-400 font-medium">Description</th>
+                    <th className="text-left px-4 py-2.5 text-gray-400 font-medium w-44">Example</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-800/50">
+                  {URL_TOKENS.map(({ token, description, example }) => (
+                    <tr key={token} className="hover:bg-gray-900/30">
+                      <td className="px-4 py-2.5">
+                        <code className="font-mono text-xs text-emerald-400">{token}</code>
+                      </td>
+                      <td className="px-4 py-2.5 text-gray-300 text-xs">{description}</td>
+                      <td className="px-4 py-2.5">
+                        <code className="font-mono text-xs text-gray-400">{example}</code>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+
+        {/* ── Section 6: UTM Link Builder ───────────────────────────── */}
         <section>
           <h2 className="text-lg font-semibold text-white mb-1">UTM Link Builder</h2>
           <p className="text-sm text-gray-400 mb-4">
             Build a complete tracking URL with UTM parameters. Copy or scan the QR code to test it.
           </p>
           <div className="rounded-xl border border-gray-800 bg-gray-900/40 p-5 space-y-4">
-            {/* Campaign select */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="text-xs text-gray-400 mb-1 block">Campaign</label>
@@ -362,7 +485,6 @@ export default function LinksPage() {
               </div>
             </div>
 
-            {/* Short URL toggle */}
             {selectedCampaign?.shortCode && (
               <label className="flex items-center gap-2 cursor-pointer w-fit">
                 <div
@@ -377,7 +499,6 @@ export default function LinksPage() {
               </label>
             )}
 
-            {/* Preview */}
             {builtUrl && (
               <div className="rounded-lg border border-gray-700 bg-gray-800/60 p-3 space-y-3">
                 <div className="font-mono text-xs text-emerald-300 break-all leading-relaxed">{builtUrl}</div>

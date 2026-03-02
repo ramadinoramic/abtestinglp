@@ -39,6 +39,9 @@ export async function GET(request: NextRequest) {
     // Mark click as converted
     await updateClickConversion(clickId);
 
+    // Non-blocking: increment variant's cumulative conversions for MAB
+    incrementVariantConversions(clickData.variantId).catch(() => {});
+
     console.log('Conversion received:', {
       clickId,
       variant: clickData.variantSlug,
@@ -155,6 +158,30 @@ async function saveConversion(data: {
 
   if (!response.ok) throw new Error(`Failed to save conversion: ${response.statusText}`);
   return response.json();
+}
+
+async function incrementVariantConversions(variantId: string) {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !supabaseKey || !variantId) return;
+
+  const headers = {
+    'Content-Type': 'application/json',
+    apikey: supabaseKey,
+    Authorization: `Bearer ${supabaseKey}`,
+  };
+  const res = await fetch(
+    `${supabaseUrl}/rest/v1/Variant?id=eq.${variantId}&select=cumulativeConversions`,
+    { headers }
+  );
+  const rows = await res.json();
+  if (!Array.isArray(rows) || rows.length === 0) return;
+  const current = rows[0].cumulativeConversions ?? 0;
+  await fetch(`${supabaseUrl}/rest/v1/Variant?id=eq.${variantId}`, {
+    method: 'PATCH',
+    headers,
+    body: JSON.stringify({ cumulativeConversions: current + 1 }),
+  });
 }
 
 async function updateClickConversion(clickId: string) {

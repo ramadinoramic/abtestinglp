@@ -33,7 +33,10 @@ export async function GET() {
   }
 }
 
-// POST /api/admin/campaigns - create a new campaign with 1-5 landers
+// POST /api/admin/campaigns
+// Two modes:
+//   1. Normal create: { name, slug, offerUrl, offerId, adSpend, geoGate, optimizationMode, startsAt, endsAt, landers[] }
+//   2. Clone:         { clone: true, sourceCampaignId, newName, newSlug }
 export async function POST(request: NextRequest) {
   const { url, key, configured } = getSupabaseConfig();
   if (!configured) {
@@ -45,13 +48,26 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const { name, slug, offerUrl, offerId, adSpend, geoGate, landers } = body as {
+
+    // ── Clone mode ────────────────────────────────────────────────────────────
+    if (body.clone) {
+      return handleClone(url!, key!, body);
+    }
+
+    // ── Normal create ─────────────────────────────────────────────────────────
+    const {
+      name, slug, offerUrl, offerId, adSpend, geoGate,
+      optimizationMode, startsAt, endsAt, landers,
+    } = body as {
       name: string;
       slug: string;
       offerUrl: string;
       offerId?: string;
       adSpend?: number;
       geoGate?: boolean;
+      optimizationMode?: string;
+      startsAt?: string;
+      endsAt?: string;
       landers: { landingPage: string; weight: number }[];
     };
 
@@ -75,7 +91,6 @@ export async function POST(request: NextRequest) {
     const campaignId = crypto.randomUUID();
     const shortCode = Math.random().toString(36).slice(2, 8);
 
-    // Create campaign
     const campaignRes = await fetch(`${url}/rest/v1/Campaign`, {
       method: 'POST',
       headers: { ...supabaseHeaders(key!), Prefer: 'return=minimal' },
@@ -89,6 +104,9 @@ export async function POST(request: NextRequest) {
         offerId: offerId || '',
         adSpend: adSpend ?? null,
         geoGate: geoGate ?? false,
+        optimizationMode: optimizationMode ?? 'STATIC',
+        startsAt: startsAt ?? null,
+        endsAt: endsAt ?? null,
         shortCode,
         updatedAt: now,
       }),
@@ -119,6 +137,8 @@ export async function POST(request: NextRequest) {
             content: { landingPage: lander.landingPage },
             trafficWeight: lander.weight,
             isControl: i === 0,
+            cumulativeClicks: 0,
+            cumulativeConversions: 0,
             updatedAt: now,
           }),
         })
@@ -138,7 +158,8 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// PATCH /api/admin/campaigns - update traffic weights for 1-5 variants OR generate short code
+// PATCH /api/admin/campaigns
+// Handles: weight updates, short code generation, campaign settings update
 export async function PATCH(request: NextRequest) {
   const { url, key, configured } = getSupabaseConfig();
   if (!configured) {
@@ -148,9 +169,16 @@ export async function PATCH(request: NextRequest) {
     const body = await request.json() as {
       variants?: { id: string; trafficWeight: number }[];
       generateShortCode?: { campaignId: string };
+      updateSettings?: {
+        campaignId: string;
+        optimizationMode?: string;
+        startsAt?: string | null;
+        endsAt?: string | null;
+        adSpend?: number | null;
+      };
     };
 
-    // Handle short code generation for existing campaigns
+    // Generate short code
     if (body.generateShortCode) {
       const { campaignId } = body.generateShortCode;
       if (!campaignId) return NextResponse.json({ error: 'Missing campaignId' }, { status: 400 });
@@ -164,8 +192,26 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ success: true, shortCode });
     }
 
-    const { variants } = body;
+    // Update campaign settings (optimizationMode, scheduling, adSpend)
+    if (body.updateSettings) {
+      const { campaignId, ...settings } = body.updateSettings;
+      if (!campaignId) return NextResponse.json({ error: 'Missing campaignId' }, { status: 400 });
+      const patch: Record<string, unknown> = { updatedAt: new Date().toISOString() };
+      if (settings.optimizationMode !== undefined) patch.optimizationMode = settings.optimizationMode;
+      if (settings.startsAt !== undefined) patch.startsAt = settings.startsAt;
+      if (settings.endsAt !== undefined) patch.endsAt = settings.endsAt;
+      if (settings.adSpend !== undefined) patch.adSpend = settings.adSpend;
+      const res = await fetch(`${url}/rest/v1/Campaign?id=eq.${campaignId}`, {
+        method: 'PATCH',
+        headers: { ...supabaseHeaders(key!), Prefer: 'return=minimal' },
+        body: JSON.stringify(patch),
+      });
+      if (!res.ok) return NextResponse.json({ error: 'Failed to update settings' }, { status: 400 });
+      return NextResponse.json({ success: true });
+    }
 
+    // Update variant traffic weights
+    const { variants } = body;
     if (!Array.isArray(variants) || variants.length < 1 || variants.length > 5) {
       return NextResponse.json({ error: '1 to 5 variants required' }, { status: 400 });
     }
@@ -185,8 +231,7 @@ export async function PATCH(request: NextRequest) {
     const results = await Promise.all(patches);
     for (const res of results) {
       if (!res.ok) {
-        const text = await res.text();
-        console.error('[campaigns PATCH] variant update failed:', text);
+        console.error('[campaigns PATCH] variant update failed:', await res.text());
         return NextResponse.json({ error: 'Failed to update variant' }, { status: 400 });
       }
     }
@@ -218,4 +263,95 @@ export async function DELETE(request: NextRequest) {
     console.error('[campaigns DELETE]', error);
     return NextResponse.json({ error: 'Failed to delete campaign' }, { status: 500 });
   }
+}
+
+// ─── Clone handler ────────────────────────────────────────────────────────────
+
+async function handleClone(
+  url: string,
+  key: string,
+  body: { sourceCampaignId: string; newName: string; newSlug: string }
+): Promise<NextResponse> {
+  const { sourceCampaignId, newName, newSlug } = body;
+  if (!sourceCampaignId || !newName || !newSlug) {
+    return NextResponse.json({ error: 'Missing sourceCampaignId, newName, or newSlug' }, { status: 400 });
+  }
+
+  const headers = supabaseHeaders(key);
+
+  // Fetch source campaign + variants
+  const [srcCampaignRes, srcVariantsRes] = await Promise.all([
+    fetch(`${url}/rest/v1/Campaign?id=eq.${sourceCampaignId}&select=*&limit=1`, { headers }),
+    fetch(`${url}/rest/v1/Variant?campaignId=eq.${sourceCampaignId}&select=*`, { headers }),
+  ]);
+
+  const srcCampaigns = await srcCampaignRes.json();
+  const srcVariants = await srcVariantsRes.json();
+
+  if (!Array.isArray(srcCampaigns) || srcCampaigns.length === 0) {
+    return NextResponse.json({ error: 'Source campaign not found' }, { status: 404 });
+  }
+
+  const src = srcCampaigns[0];
+  const now = new Date().toISOString();
+  const newCampaignId = crypto.randomUUID();
+  const newShortCode = Math.random().toString(36).slice(2, 8);
+
+  // Create cloned campaign
+  const cloneRes = await fetch(`${url}/rest/v1/Campaign`, {
+    method: 'POST',
+    headers: { ...headers, Prefer: 'return=minimal' },
+    body: JSON.stringify({
+      id: newCampaignId,
+      name: newName,
+      slug: newSlug,
+      status: 'ACTIVE',
+      trafficSource: src.trafficSource,
+      offerUrl: src.offerUrl,
+      offerId: src.offerId,
+      adSpend: null,
+      geoGate: src.geoGate,
+      optimizationMode: src.optimizationMode ?? 'STATIC',
+      shortCode: newShortCode,
+      startsAt: null,
+      endsAt: null,
+      updatedAt: now,
+    }),
+  });
+
+  if (!cloneRes.ok) {
+    const text = await cloneRes.text();
+    return NextResponse.json({ error: text }, { status: 400 });
+  }
+
+  // Clone variants
+  if (Array.isArray(srcVariants) && srcVariants.length > 0) {
+    await Promise.all(
+      srcVariants.map((v) =>
+        fetch(`${url}/rest/v1/Variant`, {
+          method: 'POST',
+          headers: { ...headers, Prefer: 'return=minimal' },
+          body: JSON.stringify({
+            id: crypto.randomUUID(),
+            campaignId: newCampaignId,
+            name: v.name,
+            slug: v.slug,
+            theme: v.theme,
+            content: v.content,
+            trafficWeight: v.trafficWeight,
+            isControl: v.isControl,
+            creativeMetadata: v.creativeMetadata ?? null,
+            cumulativeClicks: 0,
+            cumulativeConversions: 0,
+            updatedAt: now,
+          }),
+        })
+      )
+    );
+  }
+
+  return NextResponse.json({
+    success: true,
+    campaign: { id: newCampaignId, name: newName, slug: newSlug, shortCode: newShortCode },
+  });
 }

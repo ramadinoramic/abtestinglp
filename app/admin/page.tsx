@@ -13,6 +13,9 @@ interface Campaign {
   adSpend?: number | null;
   geoGate?: boolean;
   shortCode?: string | null;
+  optimizationMode?: string;
+  startsAt?: string | null;
+  endsAt?: string | null;
   createdAt: string;
   variants: { id: string; name: string; slug: string; trafficWeight: number }[];
 }
@@ -108,8 +111,17 @@ export default function AdminPage() {
   const [editWeights, setEditWeights] = useState<{ id: string; slug: string; weight: number }[]>([]);
   const [editSaving, setEditSaving] = useState(false);
 
+  // Clone state
+  const [cloningId, setCloningId] = useState<string | null>(null);
+  const [cloneName, setCloneName] = useState('');
+  const [cloneSlug, setCloneSlug] = useState('');
+  const [cloning, setCloning] = useState(false);
+
   // Form state
-  const [formBase, setFormBase] = useState({ name: '', slug: '', offerUrl: '', offerId: '', adSpend: '', geoGate: false });
+  const [formBase, setFormBase] = useState({
+    name: '', slug: '', offerUrl: '', offerId: '', adSpend: '', geoGate: false,
+    optimizationMode: 'STATIC', startsAt: '', endsAt: '',
+  });
   const [landers, setLanders] = useState<LanderRow[]>([{ landingPage: '', weight: 100 }]);
 
   useEffect(() => {
@@ -199,6 +211,9 @@ export default function AdminPage() {
         ...formBase,
         adSpend: formBase.adSpend ? parseFloat(formBase.adSpend) : null,
         geoGate: formBase.geoGate,
+        optimizationMode: formBase.optimizationMode,
+        startsAt: formBase.startsAt || null,
+        endsAt: formBase.endsAt || null,
         landers,
       }),
     });
@@ -210,7 +225,7 @@ export default function AdminPage() {
       setGeneratedShortCode(data.campaign?.shortCode ?? '');
       const campRes = await fetch('/api/admin/campaigns').then((r) => r.json());
       setCampaigns(campRes.campaigns || []);
-      setFormBase({ name: '', slug: '', offerUrl: '', offerId: '', adSpend: '', geoGate: false });
+      setFormBase({ name: '', slug: '', offerUrl: '', offerId: '', adSpend: '', geoGate: false, optimizationMode: 'STATIC', startsAt: '', endsAt: '' });
       setLanders([{ landingPage: '', weight: 100 }]);
     } else {
       setError(JSON.stringify(data.error));
@@ -224,6 +239,36 @@ export default function AdminPage() {
     await fetch(`/api/admin/campaigns?id=${id}`, { method: 'DELETE' });
     setCampaigns((prev) => prev.filter((c) => c.id !== id));
     if (expandedId === id) setExpandedId(null);
+  }
+
+  // ── Clone ─────────────────────────────────────────────────────────────────
+
+  function openClone(camp: Campaign) {
+    const newName = `${camp.name} (copy)`;
+    setCloningId(camp.id);
+    setCloneName(newName);
+    setCloneSlug(slugify(newName));
+  }
+
+  async function handleClone(camp: Campaign) {
+    setCloning(true);
+    try {
+      const res = await fetch('/api/admin/campaigns', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clone: true, sourceCampaignId: camp.id, newName: cloneName, newSlug: cloneSlug }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        const campRes = await fetch('/api/admin/campaigns').then((r) => r.json());
+        setCampaigns(campRes.campaigns || []);
+        setCloningId(null);
+        setCloneName('');
+        setCloneSlug('');
+      }
+    } finally {
+      setCloning(false);
+    }
   }
 
   // ── Stats ─────────────────────────────────────────────────────────────────
@@ -435,6 +480,54 @@ export default function AdminPage() {
               </div>
             </label>
 
+            {/* Optimization Mode toggle */}
+            <div>
+              <label className="block text-sm text-gray-400 mb-2">Optimization Mode</label>
+              <div className="flex gap-3">
+                {(['STATIC', 'BANDIT'] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => setFormBase((f) => ({ ...f, optimizationMode: mode }))}
+                    className={`text-sm px-4 py-2 rounded-lg border transition-colors ${
+                      formBase.optimizationMode === mode
+                        ? 'bg-blue-600 border-blue-500 text-white'
+                        : 'bg-gray-800 border-gray-700 text-gray-400 hover:bg-gray-700'
+                    }`}
+                  >
+                    {mode === 'STATIC' ? 'Static split' : 'Auto-optimize (MAB)'}
+                  </button>
+                ))}
+              </div>
+              {formBase.optimizationMode === 'BANDIT' && (
+                <p className="text-xs text-gray-500 mt-1.5">
+                  Thompson Sampling will auto-shift traffic to the winning variant over time.
+                </p>
+              )}
+            </div>
+
+            {/* Campaign scheduling */}
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">Start date (optional)</label>
+                <input
+                  type="datetime-local"
+                  value={formBase.startsAt}
+                  onChange={(e) => setFormBase((f) => ({ ...f, startsAt: e.target.value }))}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white focus:outline-none focus:border-blue-500 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">End date (optional)</label>
+                <input
+                  type="datetime-local"
+                  value={formBase.endsAt}
+                  onChange={(e) => setFormBase((f) => ({ ...f, endsAt: e.target.value }))}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white focus:outline-none focus:border-blue-500 text-sm"
+                />
+              </div>
+            </div>
+
             {/* Landers section */}
             {landingPages.length === 0 ? (
               <div className="bg-yellow-900/30 border border-yellow-700 rounded-lg p-4 text-yellow-300 text-sm">
@@ -609,6 +702,11 @@ export default function AdminPage() {
                                 🇨🇭 CH only
                               </span>
                             )}
+                            {camp.optimizationMode === 'BANDIT' && (
+                              <span className="text-xs bg-purple-900/40 text-purple-300 px-2 py-0.5 rounded-full">
+                                Auto MAB
+                              </span>
+                            )}
                           </div>
                           <div className="flex flex-wrap gap-2 mb-3">
                             {camp.variants?.map((v, i) => (
@@ -664,6 +762,16 @@ export default function AdminPage() {
                             }`}
                           >
                             Edit split
+                          </button>
+                          <button
+                            onClick={() => cloningId === camp.id ? setCloningId(null) : openClone(camp)}
+                            className={`text-xs px-3 py-1.5 rounded border transition-colors whitespace-nowrap ${
+                              cloningId === camp.id
+                                ? 'bg-green-900/40 border-green-700 text-green-300'
+                                : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700'
+                            }`}
+                          >
+                            Clone
                           </button>
                           <button
                             onClick={() => handleDelete(camp.id, camp.name)}
@@ -724,6 +832,50 @@ export default function AdminPage() {
                           </button>
                           <button
                             onClick={() => setEditingId(null)}
+                            className="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-4 py-1.5 rounded transition-colors"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Clone panel */}
+                    {cloningId === camp.id && (
+                      <div className="border-t border-gray-800 bg-gray-950 px-5 py-4">
+                        <p className="text-xs text-gray-400 mb-3">
+                          Clone this campaign — copies all variants with fresh stats.
+                        </p>
+                        <div className="grid grid-cols-2 gap-3 mb-3">
+                          <div>
+                            <label className="block text-xs text-gray-500 mb-1">New name</label>
+                            <input
+                              type="text"
+                              value={cloneName}
+                              onChange={(e) => { setCloneName(e.target.value); setCloneSlug(slugify(e.target.value)); }}
+                              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-sm focus:outline-none focus:border-blue-500"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs text-gray-500 mb-1">Slug</label>
+                            <input
+                              type="text"
+                              value={cloneSlug}
+                              onChange={(e) => setCloneSlug(e.target.value)}
+                              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-sm focus:outline-none focus:border-blue-500"
+                            />
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => handleClone(camp)}
+                            disabled={cloning || !cloneName || !cloneSlug}
+                            className="text-xs bg-green-600 hover:bg-green-500 disabled:bg-gray-700 disabled:cursor-not-allowed text-white px-4 py-1.5 rounded transition-colors"
+                          >
+                            {cloning ? 'Cloning...' : 'Clone campaign'}
+                          </button>
+                          <button
+                            onClick={() => setCloningId(null)}
                             className="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-4 py-1.5 rounded transition-colors"
                           >
                             Cancel

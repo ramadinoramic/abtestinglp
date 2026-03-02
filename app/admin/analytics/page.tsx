@@ -41,6 +41,7 @@ interface StatsData {
   }[];
   countries: { country: string; clicks: number; pct: number }[];
   devices: { device: string; clicks: number; pct: number }[];
+  languages: { language: string; clicks: number; pct: number }[];
   vibes: {
     vibe: string;
     clicks: number;
@@ -52,7 +53,13 @@ interface StatsData {
     payout: number;
   }[];
   daily: { date: string; clicks: number; conversions: number }[];
-  significance: { isSignificant: boolean; confidence: number; winner: string | null; leader: string | null };
+  significance: {
+    isSignificant: boolean;
+    confidence: number;
+    winner: string | null;
+    leader: string | null;
+    bayesian: { probChallengerWins: number; controlName: string; challengerName: string } | null;
+  };
 }
 
 function fmt(n: number, decimals = 1) {
@@ -221,6 +228,59 @@ function TrendChart({ daily }: { daily: { date: string; clicks: number; conversi
   );
 }
 
+// ── Funnel Chart ───────────────────────────────────────────────────────────────
+
+function FunnelChart({ overview }: { overview: StatsData['overview'] }) {
+  const steps = [
+    { label: 'Link Clicks', value: overview.totalClicks },
+    { label: 'Impressions', value: overview.impressions },
+    { label: 'CTA Clicks', value: overview.ctaClicks },
+    { label: 'Conversions', value: overview.conversions },
+  ];
+  const max = steps[0].value || 1;
+
+  return (
+    <div className="space-y-2">
+      {steps.map((step, i) => {
+        const pct = Math.round((step.value / max) * 100);
+        const prevVal = i > 0 ? steps[i - 1].value : null;
+        const continuedPct = prevVal && prevVal > 0 ? Math.round((step.value / prevVal) * 100) : null;
+        return (
+          <div key={step.label}>
+            {i > 0 && continuedPct !== null && (
+              <div className="flex items-center gap-2 my-1.5">
+                <div className="flex-1 border-t border-dashed border-gray-700" />
+                <span className={`text-xs px-2 py-0.5 rounded-full border ${
+                  continuedPct >= 50
+                    ? 'text-green-400 bg-green-900/20 border-green-800'
+                    : continuedPct >= 20
+                    ? 'text-yellow-400 bg-yellow-900/20 border-yellow-800'
+                    : 'text-red-400 bg-red-900/20 border-red-800'
+                }`}>
+                  {continuedPct}% continued ↓
+                </span>
+                <div className="flex-1 border-t border-dashed border-gray-700" />
+              </div>
+            )}
+            <div className="flex items-center gap-3">
+              <div className="text-xs text-gray-500 w-24 text-right shrink-0">{step.label}</div>
+              <div className="flex-1 bg-gray-800 rounded h-6 overflow-hidden">
+                <div
+                  className="h-full bg-blue-600/50 border-r-2 border-blue-400/60 transition-all"
+                  style={{ width: `${Math.max(pct, 1)}%` }}
+                />
+              </div>
+              <span className="text-xs font-semibold text-white w-20 text-right shrink-0">
+                {step.value.toLocaleString()} <span className="text-gray-600 font-normal">({pct}%)</span>
+              </span>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── Main component (inner, uses useSearchParams) ───────────────────────────────
 
 function AnalyticsInner() {
@@ -311,6 +371,16 @@ function AnalyticsInner() {
                 </button>
               ))}
             </div>
+
+            {/* Export CSV */}
+            {selectedId && (
+              <a
+                href={`/api/admin/export?campaignId=${selectedId}&days=${days}`}
+                className="text-xs px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 transition-colors whitespace-nowrap"
+              >
+                Export CSV
+              </a>
+            )}
           </div>
         </div>
 
@@ -366,6 +436,12 @@ function AnalyticsInner() {
                   {m.sub && <div className="text-xs text-gray-600 mt-0.5">{m.sub}</div>}
                 </div>
               ))}
+            </div>
+
+            {/* Conversion Funnel */}
+            <div className="bg-gray-900 rounded-xl p-5 border border-gray-800">
+              <h3 className="text-sm font-semibold text-gray-300 mb-4">Conversion Funnel</h3>
+              <FunnelChart overview={stats.overview} />
             </div>
 
             {/* Daily trend chart */}
@@ -466,6 +542,13 @@ function AnalyticsInner() {
                       : stats.significance.confidence > 0
                       ? `Gathering data — ${stats.significance.confidence}% confidence so far. Need 95% to declare a winner.`
                       : 'Not enough conversion data to compute statistical significance yet.'}
+                    {stats.significance.bayesian && (
+                      <p className="mt-1 opacity-75">
+                        Bayesian: <strong>{stats.significance.bayesian.challengerName}</strong> has{' '}
+                        <strong>{Math.round(stats.significance.bayesian.probChallengerWins * 100)}%</strong>{' '}
+                        probability of outperforming <strong>{stats.significance.bayesian.controlName}</strong>
+                      </p>
+                    )}
                   </div>
                 )}
               </div>
@@ -513,6 +596,24 @@ function AnalyticsInner() {
                 </div>
               )}
             </div>
+
+            {/* Language breakdown */}
+            {stats.languages?.length > 0 && (
+              <div className="bg-gray-900 rounded-xl p-5 border border-gray-800">
+                <h3 className="text-sm font-semibold text-gray-300 mb-4">Languages</h3>
+                <div className="space-y-3">
+                  {stats.languages.map((l) => (
+                    <div key={l.language}>
+                      <div className="flex justify-between text-xs text-gray-400 mb-1">
+                        <span>{l.language || 'Unknown'}</span>
+                        <span>{l.clicks.toLocaleString()} ({l.pct}%)</span>
+                      </div>
+                      <Bar pct={l.pct} color="bg-orange-500" />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Vibe breakdown */}
             {stats.vibes?.length > 0 && (

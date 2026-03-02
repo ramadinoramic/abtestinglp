@@ -18,9 +18,12 @@ model Campaign {
   trafficSource String
   offerUrl      String
   offerId       String
-  adSpend       Float?
-  geoGate       Boolean        @default(false)
-  shortCode     String?        @unique
+  adSpend          Float?
+  geoGate          Boolean        @default(false)
+  shortCode        String?        @unique
+  optimizationMode String         @default("STATIC") // STATIC | BANDIT
+  startsAt         DateTime?
+  endsAt           DateTime?
   variants      Variant[]
   clicks        Click[]
   createdAt     DateTime       @default(now())
@@ -44,9 +47,11 @@ model Variant {
   slug          String
   theme         Json
   content       Json
-  trafficWeight    Int      @default(50)
-  isControl        Boolean  @default(false)
-  creativeMetadata Json?
+  trafficWeight        Int      @default(50)
+  isControl            Boolean  @default(false)
+  creativeMetadata     Json?
+  cumulativeClicks     Int      @default(0)  // used by Multi-Armed Bandit
+  cumulativeConversions Int     @default(0)  // used by Multi-Armed Bandit
   clicks           Click[]
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
@@ -79,6 +84,9 @@ model Click {
   utmContent   String?
   utmTerm      String?
   vibe         String?
+  language     String?     // primary Accept-Language tag e.g. "en", "de"
+  cost         String?     // per-click cost from traffic source (?cost=0.05)
+  externalId   String?     // traffic source click ID (?externalid=xxx)
   isBot        Boolean     @default(false)
   customParams Json?
   pageViews    Int         @default(1)
