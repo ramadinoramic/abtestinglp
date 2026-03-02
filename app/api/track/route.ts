@@ -337,14 +337,14 @@ export async function GET(request: NextRequest) {
       const campaign = Array.isArray(campData) && campData.length > 0 ? campData[0] : null;
 
       // Step 2: fetch variants if campaign found
-      let varQueryStatus: number | null = null;
+      let variantQueryStatus: number | null = null;
       let varData: unknown = null;
       if (campaign) {
         const varRes = await fetch(
           `${supabaseUrl}/rest/v1/Variant?campaignId=eq.${campaign.id}&select=id,slug,campaignId,trafficWeight`,
           { headers: dbHeaders }
         );
-        varQueryStatus = varRes.status;
+        variantQueryStatus = varRes.status;
         varData = await varRes.json();
       }
 
