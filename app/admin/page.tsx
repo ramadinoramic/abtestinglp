@@ -266,7 +266,8 @@ export default function AdminPage() {
       setFormBase({ name: '', slug: '', offerUrl: '', offerId: '', adSpend: '', geoAllowList: '', optimizationMode: 'STATIC', autoPauseEnabled: false, autoPauseThreshold: '', autoPauseWindow: '24' });
       setLanders([{ landingPage: '', weight: 100 }]);
     } else {
-      setError(JSON.stringify(data.error));
+      const details = Array.isArray(data.details) ? '\n' + data.details.join('\n') : '';
+      setError(JSON.stringify(data.error) + details);
     }
   }
 
@@ -757,7 +758,7 @@ export default function AdminPage() {
             )}
 
             {error && (
-              <div className="bg-red-900/30 border border-red-700 rounded-lg p-3 text-red-300 text-sm">
+              <div className="bg-red-900/30 border border-red-700 rounded-lg p-3 text-red-300 text-sm whitespace-pre-wrap">
                 {error}
               </div>
             )}
