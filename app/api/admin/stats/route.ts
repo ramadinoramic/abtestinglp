@@ -100,6 +100,11 @@ type RawVariant = {
 type RawCampaign = {
   name: string;
   adSpend: number | null;
+  status: string;
+  autoPauseEnabled: boolean | null;
+  autoPauseThreshold: number | null;
+  autoPauseWindow: number | null;
+  autoPausedAt: string | null;
 };
 
 // ─── GET /api/admin/stats?campaignId=xxx&days=30 ──────────────────────────────
@@ -137,7 +142,7 @@ export async function GET(request: NextRequest) {
         { headers: supabaseHeaders(key!) }
       ),
       fetch(
-        `${url}/rest/v1/Campaign?id=eq.${campaignId}&select=name,adSpend`,
+        `${url}/rest/v1/Campaign?id=eq.${campaignId}&select=name,adSpend,status,autoPauseEnabled,autoPauseThreshold,autoPauseWindow,autoPausedAt`,
         { headers: supabaseHeaders(key!) }
       ),
     ]);
@@ -145,8 +150,9 @@ export async function GET(request: NextRequest) {
     const clicks: RawClick[] = clicksRes.ok ? await clicksRes.json() : [];
     const variants: RawVariant[] = variantsRes.ok ? await variantsRes.json() : [];
     const campaignData: RawCampaign[] = campaignRes.ok ? await campaignRes.json() : [];
-    const adSpend: number | null = campaignData[0]?.adSpend ?? null;
-    const campaignName: string = campaignData[0]?.name ?? '';
+    const campaign = campaignData[0] ?? null;
+    const adSpend: number | null = campaign?.adSpend ?? null;
+    const campaignName: string = campaign?.name ?? '';
 
     // ── Filter bots ───────────────────────────────────────────────────────────
     const realClicks = clicks.filter((c) => !c.isBot);
@@ -357,6 +363,41 @@ export async function GET(request: NextRequest) {
       significance.leader = variantStats[0].name;
     }
 
+    // ── Auto-pause lazy evaluation ─────────────────────────────────────────────
+    let autoPaused = false;
+    if (
+      campaign?.autoPauseEnabled &&
+      campaign.status === 'ACTIVE' &&
+      typeof campaign.autoPauseThreshold === 'number'
+    ) {
+      const windowHours = campaign.autoPauseWindow ?? 24;
+      const windowStart = new Date(Date.now() - windowHours * 60 * 60 * 1000);
+      const windowClicks = realClicks.filter((c) => new Date(c.createdAt) >= windowStart);
+      const windowConversions = windowClicks.filter((c) => c.converted).length;
+      const windowConvRate = windowClicks.length > 0
+        ? (windowConversions / windowClicks.length) * 100
+        : 0;
+
+      // Only trigger if we have enough data (>=50 clicks) and the rate is below threshold
+      // Also skip if autoPausedAt was set within last 60s (race condition guard)
+      const recentlyPaused = campaign.autoPausedAt &&
+        Date.now() - new Date(campaign.autoPausedAt).getTime() < 60_000;
+
+      if (
+        !recentlyPaused &&
+        windowClicks.length >= 50 &&
+        windowConvRate < campaign.autoPauseThreshold
+      ) {
+        autoPaused = true;
+        // Non-blocking: update campaign status
+        fetch(`${url}/rest/v1/Campaign?id=eq.${campaignId}`, {
+          method: 'PATCH',
+          headers: { ...supabaseHeaders(key!), Prefer: 'return=minimal' },
+          body: JSON.stringify({ status: 'PAUSED', autoPausedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }),
+        }).catch(() => {});
+      }
+    }
+
     return NextResponse.json({
       overview,
       variants: variantStats,
@@ -366,6 +407,7 @@ export async function GET(request: NextRequest) {
       daily,
       vibes,
       significance,
+      autoPaused,
     });
   } catch (error) {
     console.error('[stats GET]', error);

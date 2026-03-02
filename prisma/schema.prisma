@@ -24,6 +24,10 @@ model Campaign {
   optimizationMode String         @default("STATIC") // STATIC | BANDIT
   startsAt         DateTime?
   endsAt           DateTime?
+  autoPauseEnabled   Boolean   @default(false)
+  autoPauseThreshold Float?
+  autoPauseWindow    Int       @default(24) // hours to look back
+  autoPausedAt       DateTime?
   variants      Variant[]
   clicks        Click[]
   createdAt     DateTime       @default(now())
@@ -52,6 +56,9 @@ model Variant {
   creativeMetadata     Json?
   cumulativeClicks     Int      @default(0)  // used by Multi-Armed Bandit
   cumulativeConversions Int     @default(0)  // used by Multi-Armed Bandit
+  geoTargets       String  @default("[]")  // JSON array: ["CH","AT","DE"] — empty = all
+  deviceTargets    String  @default("[]")  // JSON array: ["MOBILE","DESKTOP","TABLET"] — empty = all
+  offerUrlOverride String? // per-variant offer URL; overrides campaign.offerUrl
   clicks           Click[]
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
@@ -138,4 +145,32 @@ enum ConversionEvent {
   REGISTRATION
   FTD
   REDEPOSIT
+}
+
+// ============================================
+// IP BLOCKLIST
+// ============================================
+
+model BlockedIp {
+  id        String   @id @default(cuid())
+  ip        String   @unique
+  reason    String?
+  createdAt DateTime @default(now())
+
+  @@index([ip])
+}
+
+// ============================================
+// ADMIN USERS (RBAC)
+// ============================================
+
+model AdminUser {
+  id           String   @id @default(cuid())
+  username     String   @unique
+  passwordHash String
+  salt         String   @default("")
+  role         String   @default("ANALYST") // OWNER | ANALYST
+  createdAt    DateTime @default(now())
+
+  @@index([username])
 }

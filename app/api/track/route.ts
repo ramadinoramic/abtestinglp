@@ -15,6 +15,9 @@ interface CampaignVariant {
   content: Record<string, string>;
   cumulativeClicks: number;
   cumulativeConversions: number;
+  geoTargets?: string;       // JSON array e.g. '["CH","AT","DE"]' — empty/null = all
+  deviceTargets?: string;    // JSON array e.g. '["MOBILE","DESKTOP"]' — empty/null = all
+  offerUrlOverride?: string; // per-variant offer URL; overrides campaign.offerUrl
 }
 
 interface CampaignData {
@@ -28,6 +31,34 @@ interface CampaignData {
   startsAt: string | null;
   endsAt: string | null;
   variants: CampaignVariant[];
+}
+
+// ─── IP Blocklist cache (5-min TTL, per edge instance) ────────────────────────
+
+let blockedIpsCache: Set<string> | null = null;
+let blocklistCacheExpiry = 0;
+const BLOCKLIST_TTL_MS = 5 * 60 * 1000;
+
+async function getBlockedIps(): Promise<Set<string>> {
+  const now = Date.now();
+  if (blockedIpsCache && now < blocklistCacheExpiry) return blockedIpsCache;
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !supabaseKey) return new Set();
+
+  try {
+    const res = await fetch(`${supabaseUrl}/rest/v1/BlockedIp?select=ip`, {
+      headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` },
+    });
+    if (!res.ok) return blockedIpsCache ?? new Set();
+    const rows = await res.json();
+    blockedIpsCache = new Set(Array.isArray(rows) ? rows.map((r: { ip: string }) => r.ip) : []);
+    blocklistCacheExpiry = now + BLOCKLIST_TTL_MS;
+    return blockedIpsCache;
+  } catch {
+    return blockedIpsCache ?? new Set();
+  }
 }
 
 // ─── Rate Limiting (in-memory, per-instance) ──────────────────────────────────
@@ -127,6 +158,35 @@ function selectVariant(variants: CampaignVariant[]): CampaignVariant {
     if (random <= cumulative) return variant;
   }
   return variants[0];
+}
+
+// ─── Geo/Device targeting filter ─────────────────────────────────────────────
+
+/**
+ * Filter variants to only those matching the visitor's country + device.
+ * Safety net: if ALL variants are filtered out, return the full original list
+ * so the visitor always gets a destination.
+ */
+function filterVariantsByTargeting(
+  variants: CampaignVariant[],
+  country?: string,
+  device?: string
+): CampaignVariant[] {
+  const filtered = variants.filter((v) => {
+    // Parse geoTargets
+    let geoList: string[] = [];
+    try { geoList = v.geoTargets ? JSON.parse(v.geoTargets) : []; } catch { geoList = []; }
+    if (geoList.length > 0 && country && !geoList.includes(country.toUpperCase())) return false;
+
+    // Parse deviceTargets
+    let deviceList: string[] = [];
+    try { deviceList = v.deviceTargets ? JSON.parse(v.deviceTargets) : []; } catch { deviceList = []; }
+    if (deviceList.length > 0 && device && !deviceList.includes(device.toUpperCase())) return false;
+
+    return true;
+  });
+
+  return filtered.length > 0 ? filtered : variants; // safety net
 }
 
 // ─── Device / OS / Browser detection ─────────────────────────────────────────
@@ -266,6 +326,14 @@ export async function GET(request: NextRequest) {
       return new NextResponse('Too Many Requests', { status: 429 });
     }
 
+    // IP blocklist check (fail-open: if DB unreachable, allow the request)
+    if (!bot && ipAddress !== 'unknown') {
+      const blocked = await getBlockedIps();
+      if (blocked.has(ipAddress)) {
+        return new NextResponse(null, { status: 403 });
+      }
+    }
+
     // Fetch campaign
     const campaign = await getCampaign(campaignSlug);
     if (!campaign) {
@@ -289,15 +357,19 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // ── Variant selection ─────────────────────────────────────────────────────
+    // ── Variant selection (with geo/device targeting filter) ──────────────────
+    const eligibleVariants = forceVariant
+      ? campaign.variants
+      : filterVariantsByTargeting(campaign.variants, country, device);
+
     let selectedVariant: CampaignVariant;
     if (forceVariant) {
       selectedVariant =
         campaign.variants.find((v) => v.slug === forceVariant) || campaign.variants[0];
     } else if (campaign.optimizationMode === 'BANDIT') {
-      selectedVariant = selectVariantBandit(campaign.variants);
+      selectedVariant = selectVariantBandit(eligibleVariants);
     } else {
-      selectedVariant = selectVariant(campaign.variants);
+      selectedVariant = selectVariant(eligibleVariants);
     }
 
     // ── Click ID + params ─────────────────────────────────────────────────────
@@ -324,7 +396,9 @@ export async function GET(request: NextRequest) {
     });
 
     // ── Token resolution ──────────────────────────────────────────────────────
-    const resolvedOfferUrl = resolveTokens(campaign.offerUrl || '', {
+    // Per-variant offerUrlOverride takes precedence over campaign-level offerUrl
+    const offerUrlTemplate = selectedVariant.offerUrlOverride || campaign.offerUrl || '';
+    const resolvedOfferUrl = resolveTokens(offerUrlTemplate, {
       clickId,
       country,
       device,
@@ -435,6 +509,8 @@ function getMockCampaign(slug: string): CampaignData {
         trafficWeight: 50,
         cumulativeClicks: 0,
         cumulativeConversions: 0,
+        geoTargets: '[]',
+        deviceTargets: '[]',
         theme: { type: 'sports', primaryColor: '#3b82f6', ctaColor: '#84cc16' },
         content: { headline: 'Hier wettet die Schweiz', subheadline: '200% bis zu 400 CHF' },
       },
@@ -445,6 +521,8 @@ function getMockCampaign(slug: string): CampaignData {
         trafficWeight: 50,
         cumulativeClicks: 0,
         cumulativeConversions: 0,
+        geoTargets: '[]',
+        deviceTargets: '[]',
         theme: { type: 'casino', primaryColor: '#ef4444', ctaColor: '#10b981' },
         content: { headline: 'Dein Glück wartet', subheadline: '₺10,000 Bonus' },
       },

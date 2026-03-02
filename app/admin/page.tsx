@@ -16,6 +16,10 @@ interface Campaign {
   optimizationMode?: string;
   startsAt?: string | null;
   endsAt?: string | null;
+  autoPauseEnabled?: boolean;
+  autoPauseThreshold?: number | null;
+  autoPauseWindow?: number | null;
+  autoPausedAt?: string | null;
   createdAt: string;
   variants: { id: string; name: string; slug: string; trafficWeight: number }[];
 }
@@ -67,6 +71,10 @@ interface StatsData {
 interface LanderRow {
   landingPage: string;
   weight: number;
+  geoTargets?: string[];
+  deviceTargets?: string[];
+  offerUrlOverride?: string;
+  showTargeting?: boolean;
 }
 
 const BASE_URL =
@@ -117,10 +125,15 @@ export default function AdminPage() {
   const [cloneSlug, setCloneSlug] = useState('');
   const [cloning, setCloning] = useState(false);
 
+  // RBAC state
+  const [myRole, setMyRole] = useState<string>('OWNER');
+  const isOwner = myRole === 'OWNER';
+
   // Form state
   const [formBase, setFormBase] = useState({
     name: '', slug: '', offerUrl: '', offerId: '', adSpend: '', geoGate: false,
     optimizationMode: 'STATIC', startsAt: '', endsAt: '',
+    autoPauseEnabled: false, autoPauseThreshold: '', autoPauseWindow: '24',
   });
   const [landers, setLanders] = useState<LanderRow[]>([{ landingPage: '', weight: 100 }]);
 
@@ -128,9 +141,11 @@ export default function AdminPage() {
     Promise.all([
       fetch('/api/admin/landing-pages').then((r) => r.json()),
       fetch('/api/admin/campaigns').then((r) => r.json()),
-    ]).then(([lpData, campData]) => {
+      fetch('/api/admin/me').then((r) => r.json()),
+    ]).then(([lpData, campData, meData]) => {
       setLandingPages(lpData.landingPages || []);
       setCampaigns(campData.campaigns || []);
+      setMyRole(meData.role ?? 'OWNER');
       setLoading(false);
     });
   }, []);
@@ -179,6 +194,28 @@ export default function AdminPage() {
     setLanders((prev) => prev.map((l, i) => (i === idx ? { ...l, weight: val } : l)));
   }
 
+  function toggleLanderTargeting(idx: number) {
+    setLanders((prev) => prev.map((l, i) => (i === idx ? { ...l, showTargeting: !l.showTargeting } : l)));
+  }
+
+  function setLanderGeo(idx: number, val: string) {
+    const arr = val.split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
+    setLanders((prev) => prev.map((l, i) => (i === idx ? { ...l, geoTargets: arr } : l)));
+  }
+
+  function toggleLanderDevice(idx: number, device: string) {
+    setLanders((prev) => prev.map((l, i) => {
+      if (i !== idx) return l;
+      const cur = l.deviceTargets ?? [];
+      const updated = cur.includes(device) ? cur.filter((d) => d !== device) : [...cur, device];
+      return { ...l, deviceTargets: updated };
+    }));
+  }
+
+  function setLanderOfferOverride(idx: number, val: string) {
+    setLanders((prev) => prev.map((l, i) => (i === idx ? { ...l, offerUrlOverride: val } : l)));
+  }
+
   const totalWeight = landers.reduce((s, l) => s + (l.weight || 0), 0);
   const weightOk = Math.abs(totalWeight - 100) <= 1;
 
@@ -214,6 +251,9 @@ export default function AdminPage() {
         optimizationMode: formBase.optimizationMode,
         startsAt: formBase.startsAt || null,
         endsAt: formBase.endsAt || null,
+        autoPauseEnabled: formBase.autoPauseEnabled,
+        autoPauseThreshold: formBase.autoPauseEnabled && formBase.autoPauseThreshold ? parseFloat(formBase.autoPauseThreshold) : null,
+        autoPauseWindow: formBase.autoPauseEnabled ? parseInt(formBase.autoPauseWindow) || 24 : 24,
         landers,
       }),
     });
@@ -225,7 +265,7 @@ export default function AdminPage() {
       setGeneratedShortCode(data.campaign?.shortCode ?? '');
       const campRes = await fetch('/api/admin/campaigns').then((r) => r.json());
       setCampaigns(campRes.campaigns || []);
-      setFormBase({ name: '', slug: '', offerUrl: '', offerId: '', adSpend: '', geoGate: false, optimizationMode: 'STATIC', startsAt: '', endsAt: '' });
+      setFormBase({ name: '', slug: '', offerUrl: '', offerId: '', adSpend: '', geoGate: false, optimizationMode: 'STATIC', startsAt: '', endsAt: '', autoPauseEnabled: false, autoPauseThreshold: '', autoPauseWindow: '24' });
       setLanders([{ landingPage: '', weight: 100 }]);
     } else {
       setError(JSON.stringify(data.error));
@@ -269,6 +309,18 @@ export default function AdminPage() {
     } finally {
       setCloning(false);
     }
+  }
+
+  // ── Re-activate auto-paused campaign ─────────────────────────────────────
+
+  async function handleReactivate(campaignId: string) {
+    await fetch('/api/admin/campaigns', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reactivate: { campaignId } }),
+    });
+    const campRes = await fetch('/api/admin/campaigns').then((r) => r.json());
+    setCampaigns(campRes.campaigns || []);
   }
 
   // ── Stats ─────────────────────────────────────────────────────────────────
@@ -384,6 +436,20 @@ export default function AdminPage() {
             >
               Analytics
             </Link>
+            <Link
+              href="/admin/blocklist"
+              className="text-sm text-red-400 hover:text-red-300 border border-red-800 hover:border-red-600 px-3 py-1.5 rounded-lg transition-colors"
+            >
+              Blocklist
+            </Link>
+            {isOwner && (
+              <Link
+                href="/admin/users"
+                className="text-sm text-yellow-400 hover:text-yellow-300 border border-yellow-800 hover:border-yellow-600 px-3 py-1.5 rounded-lg transition-colors"
+              >
+                Users
+              </Link>
+            )}
             <button
               onClick={handleLogout}
               className="text-sm text-gray-400 hover:text-white border border-gray-700 hover:border-gray-500 px-3 py-1.5 rounded-lg transition-colors"
@@ -393,8 +459,13 @@ export default function AdminPage() {
           </div>
         </div>
 
-        {/* Create Campaign Form */}
-        <div className="bg-gray-900 rounded-xl p-6 mb-8 border border-gray-800">
+        {/* Create Campaign Form — OWNER only */}
+        {!isOwner && (
+          <div className="bg-gray-900/50 rounded-xl p-4 mb-8 border border-gray-800 text-center text-gray-500 text-sm">
+            You are logged in as <strong className="text-blue-400">ANALYST</strong>. Campaign creation and deletion are restricted to OWNER accounts.
+          </div>
+        )}
+        {isOwner && <div className="bg-gray-900 rounded-xl p-6 mb-8 border border-gray-800">
           <h2 className="text-xl font-semibold mb-6 text-white">Create New Campaign</h2>
           <form onSubmit={handleCreate} className="space-y-5">
 
@@ -528,6 +599,51 @@ export default function AdminPage() {
               </div>
             </div>
 
+            {/* Auto-pause section */}
+            <div className="space-y-3">
+              <label className="flex items-center gap-3 cursor-pointer">
+                <div
+                  className="relative cursor-pointer"
+                  onClick={() => setFormBase((f) => ({ ...f, autoPauseEnabled: !f.autoPauseEnabled }))}
+                >
+                  <input type="checkbox" className="sr-only" readOnly checked={formBase.autoPauseEnabled} />
+                  <div className={`w-10 h-5 rounded-full transition-colors ${formBase.autoPauseEnabled ? 'bg-amber-600' : 'bg-gray-700'}`} />
+                  <div className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${formBase.autoPauseEnabled ? 'translate-x-5' : ''}`} />
+                </div>
+                <span className="text-sm text-gray-300">Auto-pause if performance drops</span>
+              </label>
+              {formBase.autoPauseEnabled && (
+                <div className="ml-0 grid grid-cols-2 gap-3 bg-amber-950/30 border border-amber-800/50 rounded-lg p-3">
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Conv. rate threshold (%)</label>
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="0"
+                      placeholder="e.g. 1.5"
+                      value={formBase.autoPauseThreshold}
+                      onChange={(e) => setFormBase((f) => ({ ...f, autoPauseThreshold: e.target.value }))}
+                      className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Look-back window (hours)</label>
+                    <input
+                      type="number"
+                      min="1"
+                      placeholder="24"
+                      value={formBase.autoPauseWindow}
+                      onChange={(e) => setFormBase((f) => ({ ...f, autoPauseWindow: e.target.value }))}
+                      className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500"
+                    />
+                  </div>
+                  <p className="col-span-2 text-xs text-amber-400/70">
+                    Pauses automatically when ≥50 clicks in the window and conv. rate &lt; threshold.
+                  </p>
+                </div>
+              )}
+            </div>
+
             {/* Landers section */}
             {landingPages.length === 0 ? (
               <div className="bg-yellow-900/30 border border-yellow-700 rounded-lg p-4 text-yellow-300 text-sm">
@@ -556,44 +672,100 @@ export default function AdminPage() {
                   </div>
                 </div>
 
-                <div className="space-y-2">
+                <div className="space-y-3">
                   {landers.map((lander, idx) => (
-                    <div key={idx} className="flex items-center gap-3">
-                      <span className={`text-xs font-medium w-16 shrink-0 ${VARIANT_COLORS[idx]}`}>
-                        {landers.length === 1 ? '100%' : `Lander ${idx + 1}`}
-                      </span>
-                      <select
-                        value={lander.landingPage}
-                        onChange={(e) => setLanderPage(idx, e.target.value)}
-                        className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-blue-500 text-sm"
-                      >
-                        <option value="">Select landing page...</option>
-                        {landingPages.map((lp) => (
-                          <option key={lp} value={lp}>{lp}</option>
-                        ))}
-                      </select>
-                      {landers.length > 1 && (
-                        <div className="flex items-center gap-1 shrink-0">
-                          <input
-                            type="number"
-                            min={1}
-                            max={99}
-                            value={lander.weight}
-                            onChange={(e) => setLanderWeight(idx, parseInt(e.target.value) || 0)}
-                            className="w-16 bg-gray-800 border border-gray-700 rounded-lg px-2 py-2 text-white text-center text-sm focus:outline-none focus:border-blue-500"
-                          />
-                          <span className="text-gray-500 text-sm">%</span>
-                        </div>
-                      )}
-                      {landers.length > 1 && (
+                    <div key={idx} className="space-y-2">
+                      <div className="flex items-center gap-3">
+                        <span className={`text-xs font-medium w-16 shrink-0 ${VARIANT_COLORS[idx]}`}>
+                          {landers.length === 1 ? '100%' : `Lander ${idx + 1}`}
+                        </span>
+                        <select
+                          value={lander.landingPage}
+                          onChange={(e) => setLanderPage(idx, e.target.value)}
+                          className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-blue-500 text-sm"
+                        >
+                          <option value="">Select landing page...</option>
+                          {landingPages.map((lp) => (
+                            <option key={lp} value={lp}>{lp}</option>
+                          ))}
+                        </select>
+                        {landers.length > 1 && (
+                          <div className="flex items-center gap-1 shrink-0">
+                            <input
+                              type="number"
+                              min={1}
+                              max={99}
+                              value={lander.weight}
+                              onChange={(e) => setLanderWeight(idx, parseInt(e.target.value) || 0)}
+                              className="w-16 bg-gray-800 border border-gray-700 rounded-lg px-2 py-2 text-white text-center text-sm focus:outline-none focus:border-blue-500"
+                            />
+                            <span className="text-gray-500 text-sm">%</span>
+                          </div>
+                        )}
                         <button
                           type="button"
-                          onClick={() => removeLander(idx)}
-                          className="text-red-500 hover:text-red-400 text-lg leading-none shrink-0 w-6 text-center"
-                          title="Remove lander"
+                          onClick={() => toggleLanderTargeting(idx)}
+                          className="text-xs text-purple-400 hover:text-purple-300 border border-purple-900 hover:border-purple-700 px-2 py-1 rounded shrink-0"
+                          title="Geo/Device targeting"
                         >
-                          ×
+                          {lander.showTargeting ? '▾ Targeting' : '▸ Targeting'}
                         </button>
+                        {landers.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => removeLander(idx)}
+                            className="text-red-500 hover:text-red-400 text-lg leading-none shrink-0 w-6 text-center"
+                            title="Remove lander"
+                          >
+                            ×
+                          </button>
+                        )}
+                      </div>
+                      {lander.showTargeting && (
+                        <div className="ml-[76px] bg-gray-800/60 border border-gray-700 rounded-lg p-3 space-y-3">
+                          <div>
+                            <label className="block text-xs text-gray-400 mb-1">
+                              Countries (ISO codes, comma-separated — blank = all)
+                            </label>
+                            <input
+                              type="text"
+                              placeholder="e.g. CH, AT, DE"
+                              value={(lander.geoTargets ?? []).join(', ')}
+                              onChange={(e) => setLanderGeo(idx, e.target.value)}
+                              className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-purple-500"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs text-gray-400 mb-1">
+                              Devices (blank = all)
+                            </label>
+                            <div className="flex gap-3">
+                              {(['MOBILE', 'DESKTOP', 'TABLET'] as const).map((d) => (
+                                <label key={d} className="flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={(lander.deviceTargets ?? []).includes(d)}
+                                    onChange={() => toggleLanderDevice(idx, d)}
+                                    className="accent-purple-500"
+                                  />
+                                  {d.charAt(0) + d.slice(1).toLowerCase()}
+                                </label>
+                              ))}
+                            </div>
+                          </div>
+                          <div>
+                            <label className="block text-xs text-gray-400 mb-1">
+                              Offer URL override (optional — overrides campaign offer URL for this lander)
+                            </label>
+                            <input
+                              type="text"
+                              placeholder="https://offer.example.com/lp?click={clickid}"
+                              value={lander.offerUrlOverride ?? ''}
+                              onChange={(e) => setLanderOfferOverride(idx, e.target.value)}
+                              className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-purple-500"
+                            />
+                          </div>
+                        </div>
                       )}
                     </div>
                   ))}
@@ -659,7 +831,7 @@ export default function AdminPage() {
               </p>
             </div>
           )}
-        </div>
+        </div>}
 
         {/* Active Campaigns */}
         <div className="bg-gray-900 rounded-xl border border-gray-800">
@@ -705,6 +877,11 @@ export default function AdminPage() {
                             {camp.optimizationMode === 'BANDIT' && (
                               <span className="text-xs bg-purple-900/40 text-purple-300 px-2 py-0.5 rounded-full">
                                 Auto MAB
+                              </span>
+                            )}
+                            {camp.status === 'PAUSED' && camp.autoPausedAt && (
+                              <span className="text-xs bg-amber-900/50 text-amber-300 px-2 py-0.5 rounded-full">
+                                Auto-paused
                               </span>
                             )}
                           </div>
@@ -763,22 +940,34 @@ export default function AdminPage() {
                           >
                             Edit split
                           </button>
-                          <button
-                            onClick={() => cloningId === camp.id ? setCloningId(null) : openClone(camp)}
-                            className={`text-xs px-3 py-1.5 rounded border transition-colors whitespace-nowrap ${
-                              cloningId === camp.id
-                                ? 'bg-green-900/40 border-green-700 text-green-300'
-                                : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700'
-                            }`}
-                          >
-                            Clone
-                          </button>
-                          <button
-                            onClick={() => handleDelete(camp.id, camp.name)}
-                            className="text-red-500 hover:text-red-400 text-sm px-3 py-1 rounded border border-red-900 hover:border-red-700"
-                          >
-                            Delete
-                          </button>
+                          {isOwner && (
+                            <button
+                              onClick={() => cloningId === camp.id ? setCloningId(null) : openClone(camp)}
+                              className={`text-xs px-3 py-1.5 rounded border transition-colors whitespace-nowrap ${
+                                cloningId === camp.id
+                                  ? 'bg-green-900/40 border-green-700 text-green-300'
+                                  : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700'
+                              }`}
+                            >
+                              Clone
+                            </button>
+                          )}
+                          {camp.status === 'PAUSED' && camp.autoPausedAt && isOwner && (
+                            <button
+                              onClick={() => handleReactivate(camp.id)}
+                              className="text-amber-400 hover:text-amber-300 text-sm px-3 py-1 rounded border border-amber-800 hover:border-amber-600"
+                            >
+                              Re-activate
+                            </button>
+                          )}
+                          {isOwner && (
+                            <button
+                              onClick={() => handleDelete(camp.id, camp.name)}
+                              className="text-red-500 hover:text-red-400 text-sm px-3 py-1 rounded border border-red-900 hover:border-red-700"
+                            >
+                              Delete
+                            </button>
+                          )}
                         </div>
                       </div>
                     </div>

@@ -14,6 +14,14 @@ function supabaseHeaders(key: string) {
   };
 }
 
+function requireOwner(request: NextRequest): NextResponse | null {
+  const role = request.headers.get('x-admin-role');
+  if (role && role !== 'OWNER') {
+    return NextResponse.json({ error: 'Forbidden: OWNER role required' }, { status: 403 });
+  }
+  return null;
+}
+
 // GET /api/admin/campaigns - list all campaigns with variants
 export async function GET() {
   const { url, key, configured } = getSupabaseConfig();
@@ -38,6 +46,8 @@ export async function GET() {
 //   1. Normal create: { name, slug, offerUrl, offerId, adSpend, geoGate, optimizationMode, startsAt, endsAt, landers[] }
 //   2. Clone:         { clone: true, sourceCampaignId, newName, newSlug }
 export async function POST(request: NextRequest) {
+  const denied = requireOwner(request);
+  if (denied) return denied;
   const { url, key, configured } = getSupabaseConfig();
   if (!configured) {
     return NextResponse.json(
@@ -68,7 +78,13 @@ export async function POST(request: NextRequest) {
       optimizationMode?: string;
       startsAt?: string;
       endsAt?: string;
-      landers: { landingPage: string; weight: number }[];
+      landers: {
+        landingPage: string;
+        weight: number;
+        geoTargets?: string[];
+        deviceTargets?: string[];
+        offerUrlOverride?: string;
+      }[];
     };
 
     if (!name || !slug || !offerUrl) {
@@ -139,6 +155,9 @@ export async function POST(request: NextRequest) {
             isControl: i === 0,
             cumulativeClicks: 0,
             cumulativeConversions: 0,
+            geoTargets: JSON.stringify(lander.geoTargets ?? []),
+            deviceTargets: JSON.stringify(lander.deviceTargets ?? []),
+            offerUrlOverride: lander.offerUrlOverride || null,
             updatedAt: now,
           }),
         })
@@ -169,14 +188,31 @@ export async function PATCH(request: NextRequest) {
     const body = await request.json() as {
       variants?: { id: string; trafficWeight: number }[];
       generateShortCode?: { campaignId: string };
+      reactivate?: { campaignId: string };
       updateSettings?: {
         campaignId: string;
         optimizationMode?: string;
         startsAt?: string | null;
         endsAt?: string | null;
         adSpend?: number | null;
+        autoPauseEnabled?: boolean;
+        autoPauseThreshold?: number | null;
+        autoPauseWindow?: number | null;
       };
     };
+
+    // Re-activate a campaign that was auto-paused
+    if (body.reactivate) {
+      const { campaignId } = body.reactivate;
+      if (!campaignId) return NextResponse.json({ error: 'Missing campaignId' }, { status: 400 });
+      const res = await fetch(`${url}/rest/v1/Campaign?id=eq.${campaignId}`, {
+        method: 'PATCH',
+        headers: { ...supabaseHeaders(key!), Prefer: 'return=minimal' },
+        body: JSON.stringify({ status: 'ACTIVE', autoPausedAt: null, updatedAt: new Date().toISOString() }),
+      });
+      if (!res.ok) return NextResponse.json({ error: 'Failed to re-activate campaign' }, { status: 400 });
+      return NextResponse.json({ success: true });
+    }
 
     // Generate short code
     if (body.generateShortCode) {
@@ -201,6 +237,9 @@ export async function PATCH(request: NextRequest) {
       if (settings.startsAt !== undefined) patch.startsAt = settings.startsAt;
       if (settings.endsAt !== undefined) patch.endsAt = settings.endsAt;
       if (settings.adSpend !== undefined) patch.adSpend = settings.adSpend;
+      if (settings.autoPauseEnabled !== undefined) patch.autoPauseEnabled = settings.autoPauseEnabled;
+      if (settings.autoPauseThreshold !== undefined) patch.autoPauseThreshold = settings.autoPauseThreshold;
+      if (settings.autoPauseWindow !== undefined) patch.autoPauseWindow = settings.autoPauseWindow;
       const res = await fetch(`${url}/rest/v1/Campaign?id=eq.${campaignId}`, {
         method: 'PATCH',
         headers: { ...supabaseHeaders(key!), Prefer: 'return=minimal' },
@@ -244,6 +283,8 @@ export async function PATCH(request: NextRequest) {
 
 // DELETE /api/admin/campaigns?id=xxx
 export async function DELETE(request: NextRequest) {
+  const denied = requireOwner(request);
+  if (denied) return denied;
   const { url, key, configured } = getSupabaseConfig();
   if (!configured) {
     return NextResponse.json({ error: 'Supabase not configured' }, { status: 503 });
@@ -341,6 +382,9 @@ async function handleClone(
             trafficWeight: v.trafficWeight,
             isControl: v.isControl,
             creativeMetadata: v.creativeMetadata ?? null,
+            geoTargets: v.geoTargets ?? '[]',
+            deviceTargets: v.deviceTargets ?? '[]',
+            offerUrlOverride: v.offerUrlOverride ?? null,
             cumulativeClicks: 0,
             cumulativeConversions: 0,
             updatedAt: now,
