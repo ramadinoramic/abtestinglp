@@ -229,17 +229,26 @@ async function getCampaign(slug: string): Promise<CampaignData | null> {
   if (!supabaseUrl || !supabaseKey) return getMockCampaign(slug);
 
   try {
-    const res = await fetch(
-      `${supabaseUrl}/rest/v1/Campaign` +
-        `?slug=eq.${slug}&status=eq.ACTIVE` +
-        `&select=*,variants:Variant(*)`,
-      {
-        headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` },
-      }
+    const headers = { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` };
+
+    // Fetch campaign first (no embedded join — avoids PostgREST schema-cache issues)
+    const campRes = await fetch(
+      `${supabaseUrl}/rest/v1/Campaign?slug=eq.${encodeURIComponent(slug)}&status=eq.ACTIVE&select=*`,
+      { headers }
     );
-    const data = await res.json();
-    if (!data || data.length === 0) return null;
-    return data[0];
+    const campData = await campRes.json();
+    if (!Array.isArray(campData) || campData.length === 0) return null;
+    const campaign = campData[0];
+
+    // Fetch variants separately by campaignId
+    const varRes = await fetch(
+      `${supabaseUrl}/rest/v1/Variant?campaignId=eq.${campaign.id}&select=*&order=isControl.desc`,
+      { headers }
+    );
+    const varData = await varRes.json();
+    const variants = Array.isArray(varData) ? varData : [];
+
+    return { ...campaign, variants };
   } catch {
     return null;
   }
@@ -351,11 +360,15 @@ export async function GET(request: NextRequest) {
     }
 
     // ── Variant selection (with geo/device targeting filter) ──────────────────
+    if (!campaign.variants || campaign.variants.length === 0) {
+      return NextResponse.json({ error: 'Campaign has no variants' }, { status: 404 });
+    }
+
     const eligibleVariants = forceVariant
       ? campaign.variants
       : filterVariantsByTargeting(campaign.variants, country, device);
 
-    let selectedVariant: CampaignVariant;
+    let selectedVariant: CampaignVariant | undefined;
     if (forceVariant) {
       selectedVariant =
         campaign.variants.find((v) => v.slug === forceVariant) || campaign.variants[0];
@@ -363,6 +376,10 @@ export async function GET(request: NextRequest) {
       selectedVariant = selectVariantBandit(eligibleVariants);
     } else {
       selectedVariant = selectVariant(eligibleVariants);
+    }
+
+    if (!selectedVariant) {
+      return NextResponse.json({ error: 'No eligible variant for this request' }, { status: 404 });
     }
 
     // ── Click ID + params ─────────────────────────────────────────────────────
@@ -443,9 +460,12 @@ export async function GET(request: NextRequest) {
     }
 
     // ── Build lander redirect URL ─────────────────────────────────────────────
-    const isStaticPage =
-      selectedVariant.theme &&
-      (selectedVariant.theme as Record<string, string>).type === 'custom';
+    // theme can be a JSON object (jsonb column) or a JSON string (text column) — handle both
+    const themeObj: Record<string, string> =
+      typeof selectedVariant.theme === 'string'
+        ? JSON.parse(selectedVariant.theme as string)
+        : (selectedVariant.theme as Record<string, string>);
+    const isStaticPage = themeObj?.type === 'custom';
 
     let landingPageUrl: URL;
     if (isStaticPage) {
@@ -477,7 +497,7 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     console.error('Click tracking error:', error);
-    return NextResponse.redirect(new URL('/lp', request.url), { status: 302 });
+    return NextResponse.json({ error: 'Internal tracking error' }, { status: 500 });
   }
 }
 
