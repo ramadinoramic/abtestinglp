@@ -231,14 +231,16 @@ async function getCampaign(slug: string): Promise<CampaignData | null> {
   try {
     const headers = { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` };
 
-    // Fetch campaign first (no embedded join — avoids PostgREST schema-cache issues)
+    // Fetch campaign by slug only — check status in code to avoid enum/case issues with PostgREST
     const campRes = await fetch(
-      `${supabaseUrl}/rest/v1/Campaign?slug=eq.${encodeURIComponent(slug)}&status=eq.ACTIVE&select=*`,
+      `${supabaseUrl}/rest/v1/Campaign?slug=eq.${encodeURIComponent(slug)}&select=*`,
       { headers }
     );
     const campData = await campRes.json();
     if (!Array.isArray(campData) || campData.length === 0) return null;
     const campaign = campData[0];
+    // Only serve ACTIVE campaigns (case-insensitive to handle any DB enum/text variations)
+    if (campaign.status && String(campaign.status).toUpperCase() !== 'ACTIVE') return null;
 
     // Fetch variants separately by campaignId (no ordering — avoids issues with column existence)
     const varRes = await fetch(
@@ -324,9 +326,11 @@ export async function GET(request: NextRequest) {
         ? (typeof selectedVariant.theme === 'string' ? JSON.parse(selectedVariant.theme as string) : selectedVariant.theme) as Record<string, string>
         : null;
       return NextResponse.json({
+        queriedSlug: campaignSlug,
         supabaseConfigured,
         campaignFound: !!campaign,
         campaignSlug: campaign?.slug,
+        campaignStatus: campaign?.status,
         variantsCount: campaign?.variants?.length ?? 0,
         variants: campaign?.variants?.map(v => ({ slug: v.slug, theme: v.theme })) ?? [],
         selectedVariantSlug: selectedVariant?.slug,
