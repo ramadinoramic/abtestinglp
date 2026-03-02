@@ -26,10 +26,8 @@ interface CampaignData {
   name: string;
   offerUrl: string;
   offerId: string;
-  geoGate: boolean;
+  geoAllowList: string;      // JSON array e.g. '["CH","AT","DE"]' — empty = all
   optimizationMode: string;  // 'STATIC' | 'BANDIT'
-  startsAt: string | null;
-  endsAt: string | null;
   variants: CampaignVariant[];
 }
 
@@ -240,10 +238,10 @@ async function getCampaign(slug: string): Promise<CampaignData | null> {
       }
     );
     const data = await res.json();
-    if (!data || data.length === 0) return getMockCampaign(slug);
+    if (!data || data.length === 0) return null;
     return data[0];
   } catch {
-    return getMockCampaign(slug);
+    return null;
   }
 }
 
@@ -340,21 +338,16 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Campaign not found' }, { status: 404 });
     }
 
-    // ── Scheduling check ──────────────────────────────────────────────────────
-    const now = new Date();
-    if (campaign.startsAt && now < new Date(campaign.startsAt)) {
-      return new NextResponse('Campaign not yet active', { status: 404 });
-    }
-    if (campaign.endsAt && now > new Date(campaign.endsAt)) {
-      return new NextResponse('Campaign has ended', { status: 410 });
-    }
-
-    // ── Geo-gate ──────────────────────────────────────────────────────────────
-    if (campaign.geoGate && !bot && country && country !== 'CH') {
-      return NextResponse.redirect(new URL('/geo-blocked', request.url), {
-        status: 302,
-        headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' },
-      });
+    // ── Geo allow list ────────────────────────────────────────────────────────
+    if (!bot && country) {
+      let allowList: string[] = [];
+      try { allowList = campaign.geoAllowList ? JSON.parse(campaign.geoAllowList) : []; } catch { allowList = []; }
+      if (allowList.length > 0 && !allowList.includes(country.toUpperCase())) {
+        return NextResponse.redirect(new URL('/geo-blocked', request.url), {
+          status: 302,
+          headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' },
+        });
+      }
     }
 
     // ── Variant selection (with geo/device targeting filter) ──────────────────
@@ -497,10 +490,8 @@ function getMockCampaign(slug: string): CampaignData {
     name: 'Swiss Sports Q1 2024',
     offerUrl: 'https://www.gomedia1000.com/redirect.aspx?clickid={clickid}',
     offerId: '4452',
-    geoGate: false,
+    geoAllowList: '[]',
     optimizationMode: 'STATIC',
-    startsAt: null,
-    endsAt: null,
     variants: [
       {
         id: 'var_a',

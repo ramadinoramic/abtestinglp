@@ -19,11 +19,9 @@ model Campaign {
   offerUrl      String
   offerId       String
   adSpend          Float?
-  geoGate          Boolean        @default(false)
+  geoAllowList     String         @default("[]") // JSON array: ["CH","AT","DE"] — empty = all
   shortCode        String?        @unique
   optimizationMode String         @default("STATIC") // STATIC | BANDIT
-  startsAt         DateTime?
-  endsAt           DateTime?
   autoPauseEnabled   Boolean   @default(false)
   autoPauseThreshold Float?
   autoPauseWindow    Int       @default(24) // hours to look back

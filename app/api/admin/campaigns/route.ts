@@ -43,7 +43,7 @@ export async function GET() {
 
 // POST /api/admin/campaigns
 // Two modes:
-//   1. Normal create: { name, slug, offerUrl, offerId, adSpend, geoGate, optimizationMode, startsAt, endsAt, landers[] }
+//   1. Normal create: { name, slug, offerUrl, offerId, adSpend, geoAllowList, optimizationMode, landers[] }
 //   2. Clone:         { clone: true, sourceCampaignId, newName, newSlug }
 export async function POST(request: NextRequest) {
   const denied = requireOwner(request);
@@ -66,18 +66,16 @@ export async function POST(request: NextRequest) {
 
     // ── Normal create ─────────────────────────────────────────────────────────
     const {
-      name, slug, offerUrl, offerId, adSpend, geoGate,
-      optimizationMode, startsAt, endsAt, landers,
+      name, slug, offerUrl, offerId, adSpend, geoAllowList,
+      optimizationMode, landers,
     } = body as {
       name: string;
       slug: string;
       offerUrl: string;
       offerId?: string;
       adSpend?: number;
-      geoGate?: boolean;
+      geoAllowList?: string;
       optimizationMode?: string;
-      startsAt?: string;
-      endsAt?: string;
       landers: {
         landingPage: string;
         weight: number;
@@ -119,10 +117,8 @@ export async function POST(request: NextRequest) {
         offerUrl,
         offerId: offerId || '',
         adSpend: adSpend ?? null,
-        geoGate: geoGate ?? false,
+        geoAllowList: geoAllowList ?? '[]',
         optimizationMode: optimizationMode ?? 'STATIC',
-        startsAt: startsAt ?? null,
-        endsAt: endsAt ?? null,
         shortCode,
         updatedAt: now,
       }),
@@ -192,8 +188,6 @@ export async function PATCH(request: NextRequest) {
       updateSettings?: {
         campaignId: string;
         optimizationMode?: string;
-        startsAt?: string | null;
-        endsAt?: string | null;
         adSpend?: number | null;
         autoPauseEnabled?: boolean;
         autoPauseThreshold?: number | null;
@@ -234,8 +228,6 @@ export async function PATCH(request: NextRequest) {
       if (!campaignId) return NextResponse.json({ error: 'Missing campaignId' }, { status: 400 });
       const patch: Record<string, unknown> = { updatedAt: new Date().toISOString() };
       if (settings.optimizationMode !== undefined) patch.optimizationMode = settings.optimizationMode;
-      if (settings.startsAt !== undefined) patch.startsAt = settings.startsAt;
-      if (settings.endsAt !== undefined) patch.endsAt = settings.endsAt;
       if (settings.adSpend !== undefined) patch.adSpend = settings.adSpend;
       if (settings.autoPauseEnabled !== undefined) patch.autoPauseEnabled = settings.autoPauseEnabled;
       if (settings.autoPauseThreshold !== undefined) patch.autoPauseThreshold = settings.autoPauseThreshold;
@@ -351,11 +343,9 @@ async function handleClone(
       offerUrl: src.offerUrl,
       offerId: src.offerId,
       adSpend: null,
-      geoGate: src.geoGate,
+      geoAllowList: src.geoAllowList ?? '[]',
       optimizationMode: src.optimizationMode ?? 'STATIC',
       shortCode: newShortCode,
-      startsAt: null,
-      endsAt: null,
       updatedAt: now,
     }),
   });

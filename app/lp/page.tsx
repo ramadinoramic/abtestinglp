@@ -67,6 +67,12 @@ function LandingPageContent() {
 
     if (cParam) setClickId(cParam);
 
+    // If slug is not a built-in variant, redirect to the static HTML file
+    if (vParam && !VARIANTS[vParam]) {
+      window.location.replace(`/landing-pages/${vParam}/index.html${window.location.search}`);
+      return;
+    }
+
     const selectedVariant =
       vParam && VARIANTS[vParam] ? VARIANTS[vParam] : VARIANTS['sports-athletes'];
     setVariant(selectedVariant);

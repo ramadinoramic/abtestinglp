@@ -11,11 +11,9 @@ interface Campaign {
   offerUrl: string;
   offerId: string;
   adSpend?: number | null;
-  geoGate?: boolean;
+  geoAllowList?: string;
   shortCode?: string | null;
   optimizationMode?: string;
-  startsAt?: string | null;
-  endsAt?: string | null;
   autoPauseEnabled?: boolean;
   autoPauseThreshold?: number | null;
   autoPauseWindow?: number | null;
@@ -131,8 +129,8 @@ export default function AdminPage() {
 
   // Form state
   const [formBase, setFormBase] = useState({
-    name: '', slug: '', offerUrl: '', offerId: '', adSpend: '', geoGate: false,
-    optimizationMode: 'STATIC', startsAt: '', endsAt: '',
+    name: '', slug: '', offerUrl: '', offerId: '', adSpend: '', geoAllowList: '',
+    optimizationMode: 'STATIC',
     autoPauseEnabled: false, autoPauseThreshold: '', autoPauseWindow: '24',
   });
   const [landers, setLanders] = useState<LanderRow[]>([{ landingPage: '', weight: 100 }]);
@@ -247,10 +245,10 @@ export default function AdminPage() {
       body: JSON.stringify({
         ...formBase,
         adSpend: formBase.adSpend ? parseFloat(formBase.adSpend) : null,
-        geoGate: formBase.geoGate,
+        geoAllowList: JSON.stringify(
+          formBase.geoAllowList.split(',').map((s) => s.trim().toUpperCase()).filter(Boolean)
+        ),
         optimizationMode: formBase.optimizationMode,
-        startsAt: formBase.startsAt || null,
-        endsAt: formBase.endsAt || null,
         autoPauseEnabled: formBase.autoPauseEnabled,
         autoPauseThreshold: formBase.autoPauseEnabled && formBase.autoPauseThreshold ? parseFloat(formBase.autoPauseThreshold) : null,
         autoPauseWindow: formBase.autoPauseEnabled ? parseInt(formBase.autoPauseWindow) || 24 : 24,
@@ -265,7 +263,7 @@ export default function AdminPage() {
       setGeneratedShortCode(data.campaign?.shortCode ?? '');
       const campRes = await fetch('/api/admin/campaigns').then((r) => r.json());
       setCampaigns(campRes.campaigns || []);
-      setFormBase({ name: '', slug: '', offerUrl: '', offerId: '', adSpend: '', geoGate: false, optimizationMode: 'STATIC', startsAt: '', endsAt: '', autoPauseEnabled: false, autoPauseThreshold: '', autoPauseWindow: '24' });
+      setFormBase({ name: '', slug: '', offerUrl: '', offerId: '', adSpend: '', geoAllowList: '', optimizationMode: 'STATIC', autoPauseEnabled: false, autoPauseThreshold: '', autoPauseWindow: '24' });
       setLanders([{ landingPage: '', weight: 100 }]);
     } else {
       setError(JSON.stringify(data.error));
@@ -533,23 +531,20 @@ export default function AdminPage() {
               </div>
             </div>
 
-            {/* Geo-gate toggle */}
-            <label className="flex items-center gap-3 cursor-pointer select-none">
-              <div className="relative">
-                <input
-                  type="checkbox"
-                  className="sr-only"
-                  checked={formBase.geoGate}
-                  onChange={(e) => setFormBase((f) => ({ ...f, geoGate: e.target.checked }))}
-                />
-                <div className={`w-10 h-5 rounded-full transition-colors ${formBase.geoGate ? 'bg-blue-600' : 'bg-gray-700'}`} />
-                <div className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${formBase.geoGate ? 'translate-x-5' : ''}`} />
-              </div>
-              <div>
-                <span className="text-sm text-gray-200">Switzerland only (geo-gate)</span>
-                <p className="text-xs text-gray-500">Non-CH visitors will see a "not available in your region" page</p>
-              </div>
-            </label>
+            {/* Geo allow list */}
+            <div>
+              <label className="block text-sm text-gray-400 mb-1">
+                Allowed countries (optional)
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. CH, AT, DE — blank = all countries"
+                value={formBase.geoAllowList}
+                onChange={(e) => setFormBase((f) => ({ ...f, geoAllowList: e.target.value }))}
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 text-sm"
+              />
+              <p className="text-xs text-gray-600 mt-1">ISO 3166-1 alpha-2 codes. Visitors from other countries are redirected to /geo-blocked.</p>
+            </div>
 
             {/* Optimization Mode toggle */}
             <div>
@@ -575,28 +570,6 @@ export default function AdminPage() {
                   Thompson Sampling will auto-shift traffic to the winning variant over time.
                 </p>
               )}
-            </div>
-
-            {/* Campaign scheduling */}
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm text-gray-400 mb-1">Start date (optional)</label>
-                <input
-                  type="datetime-local"
-                  value={formBase.startsAt}
-                  onChange={(e) => setFormBase((f) => ({ ...f, startsAt: e.target.value }))}
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white focus:outline-none focus:border-blue-500 text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-sm text-gray-400 mb-1">End date (optional)</label>
-                <input
-                  type="datetime-local"
-                  value={formBase.endsAt}
-                  onChange={(e) => setFormBase((f) => ({ ...f, endsAt: e.target.value }))}
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white focus:outline-none focus:border-blue-500 text-sm"
-                />
-              </div>
             </div>
 
             {/* Auto-pause section */}
@@ -869,11 +842,16 @@ export default function AdminPage() {
                                 Single lander
                               </span>
                             )}
-                            {camp.geoGate && (
-                              <span className="text-xs bg-teal-900/40 text-teal-300 px-2 py-0.5 rounded-full">
-                                🇨🇭 CH only
-                              </span>
-                            )}
+                            {camp.geoAllowList && (() => {
+                              try {
+                                const list: string[] = JSON.parse(camp.geoAllowList);
+                                return list.length > 0 ? (
+                                  <span className="text-xs bg-teal-900/40 text-teal-300 px-2 py-0.5 rounded-full">
+                                    🌍 {list.join(', ')}
+                                  </span>
+                                ) : null;
+                              } catch { return null; }
+                            })()}
                             {camp.optimizationMode === 'BANDIT' && (
                               <span className="text-xs bg-purple-900/40 text-purple-300 px-2 py-0.5 rounded-full">
                                 Auto MAB
