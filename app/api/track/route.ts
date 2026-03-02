@@ -24,6 +24,7 @@ interface CampaignData {
   id: string;
   slug: string;
   name: string;
+  status: string;            // 'ACTIVE' | 'PAUSED' | 'ARCHIVED'
   offerUrl: string;
   offerId: string;
   geoAllowList: string;      // JSON array e.g. '["CH","AT","DE"]' — empty = all
@@ -540,6 +541,7 @@ function getMockCampaign(slug: string): CampaignData {
     id: 'camp_123',
     slug,
     name: 'Swiss Sports Q1 2024',
+    status: 'ACTIVE',
     offerUrl: 'https://www.gomedia1000.com/redirect.aspx?clickid={clickid}',
     offerId: '4452',
     geoAllowList: '[]',
