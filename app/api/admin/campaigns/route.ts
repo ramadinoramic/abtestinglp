@@ -160,10 +160,16 @@ export async function POST(request: NextRequest) {
       )
     );
 
+    const variantErrors: string[] = [];
     for (let i = 0; i < variantResults.length; i++) {
       if (!variantResults[i].ok) {
-        console.error(`[campaigns POST] lander ${i + 1} creation failed:`, await variantResults[i].text());
+        const errText = await variantResults[i].text();
+        console.error(`[campaigns POST] lander ${i + 1} creation failed:`, errText);
+        variantErrors.push(`Lander ${i + 1}: ${errText}`);
       }
+    }
+    if (variantErrors.length > 0) {
+      return NextResponse.json({ error: 'Variant creation failed', details: variantErrors }, { status: 500 });
     }
 
     return NextResponse.json({ success: true, campaign });

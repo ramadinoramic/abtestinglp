@@ -316,26 +316,55 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Missing campaign parameter' }, { status: 400 });
     }
 
-    // Debug mode: return JSON showing exactly what would happen (no redirect, no click logged)
+    // Debug mode: return raw Supabase query results (no redirect, no click logged)
     if (debugMode) {
       const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
       const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
       const supabaseConfigured = !!(supabaseUrl && supabaseKey);
-      const campaign = await getCampaign(campaignSlug);
-      const selectedVariant = campaign?.variants?.[0];
+
+      if (!supabaseConfigured) {
+        return NextResponse.json({ queriedSlug: campaignSlug, supabaseConfigured: false });
+      }
+
+      const dbHeaders = { apikey: supabaseKey!, Authorization: `Bearer ${supabaseKey!}` };
+
+      // Step 1: fetch campaign
+      const campRes = await fetch(
+        `${supabaseUrl}/rest/v1/Campaign?slug=eq.${encodeURIComponent(campaignSlug)}&select=*`,
+        { headers: dbHeaders }
+      );
+      const campData = await campRes.json();
+      const campaign = Array.isArray(campData) && campData.length > 0 ? campData[0] : null;
+
+      // Step 2: fetch variants if campaign found
+      let varQueryStatus: number | null = null;
+      let varData: unknown = null;
+      if (campaign) {
+        const varRes = await fetch(
+          `${supabaseUrl}/rest/v1/Variant?campaignId=eq.${campaign.id}&select=id,slug,campaignId,trafficWeight`,
+          { headers: dbHeaders }
+        );
+        varQueryStatus = varRes.status;
+        varData = await varRes.json();
+      }
+
+      const variants = Array.isArray(varData) ? varData : [];
+      const selectedVariant = (variants as CampaignVariant[])[0];
       const themeObj = selectedVariant?.theme
         ? (typeof selectedVariant.theme === 'string' ? JSON.parse(selectedVariant.theme as string) : selectedVariant.theme) as Record<string, string>
         : null;
+
       return NextResponse.json({
         queriedSlug: campaignSlug,
         supabaseConfigured,
+        campaignQueryStatus: campRes.status,
         campaignFound: !!campaign,
+        campaignId: campaign?.id,
         campaignSlug: campaign?.slug,
         campaignStatus: campaign?.status,
-        variantsCount: campaign?.variants?.length ?? 0,
-        variants: campaign?.variants?.map(v => ({ slug: v.slug, theme: v.theme })) ?? [],
-        selectedVariantSlug: selectedVariant?.slug,
-        themeType: themeObj?.type,
+        variantQueryStatus,
+        variantRawResponse: varData,   // show exactly what Supabase returned
+        variantsCount: variants.length,
         isStaticPage: themeObj?.type === 'custom',
         wouldRedirectTo: campaign && selectedVariant
           ? (themeObj?.type === 'custom'
