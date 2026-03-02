@@ -240,9 +240,9 @@ async function getCampaign(slug: string): Promise<CampaignData | null> {
     if (!Array.isArray(campData) || campData.length === 0) return null;
     const campaign = campData[0];
 
-    // Fetch variants separately by campaignId
+    // Fetch variants separately by campaignId (no ordering — avoids issues with column existence)
     const varRes = await fetch(
-      `${supabaseUrl}/rest/v1/Variant?campaignId=eq.${campaign.id}&select=*&order=isControl.desc`,
+      `${supabaseUrl}/rest/v1/Variant?campaignId=eq.${campaign.id}&select=*`,
       { headers }
     );
     const varData = await varRes.json();
@@ -307,9 +307,37 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const campaignSlug = searchParams.get('campaign');
     const forceVariant = searchParams.get('variant');
+    const debugMode = searchParams.get('debug') === '1';
 
     if (!campaignSlug) {
       return NextResponse.json({ error: 'Missing campaign parameter' }, { status: 400 });
+    }
+
+    // Debug mode: return JSON showing exactly what would happen (no redirect, no click logged)
+    if (debugMode) {
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+      const supabaseConfigured = !!(supabaseUrl && supabaseKey);
+      const campaign = await getCampaign(campaignSlug);
+      const selectedVariant = campaign?.variants?.[0];
+      const themeObj = selectedVariant?.theme
+        ? (typeof selectedVariant.theme === 'string' ? JSON.parse(selectedVariant.theme as string) : selectedVariant.theme) as Record<string, string>
+        : null;
+      return NextResponse.json({
+        supabaseConfigured,
+        campaignFound: !!campaign,
+        campaignSlug: campaign?.slug,
+        variantsCount: campaign?.variants?.length ?? 0,
+        variants: campaign?.variants?.map(v => ({ slug: v.slug, theme: v.theme })) ?? [],
+        selectedVariantSlug: selectedVariant?.slug,
+        themeType: themeObj?.type,
+        isStaticPage: themeObj?.type === 'custom',
+        wouldRedirectTo: campaign && selectedVariant
+          ? (themeObj?.type === 'custom'
+            ? `/landing-pages/${selectedVariant.slug}/index.html`
+            : `/lp?v=${selectedVariant.slug}`)
+          : null,
+      });
     }
 
     // Collect request context
