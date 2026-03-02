@@ -149,11 +149,6 @@ export async function POST(request: NextRequest) {
             content: { landingPage: lander.landingPage },
             trafficWeight: lander.weight,
             isControl: i === 0,
-            cumulativeClicks: 0,
-            cumulativeConversions: 0,
-            geoTargets: JSON.stringify(lander.geoTargets ?? []),
-            deviceTargets: JSON.stringify(lander.deviceTargets ?? []),
-            offerUrlOverride: lander.offerUrlOverride || null,
             updatedAt: now,
           }),
         })
