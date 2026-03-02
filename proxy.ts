@@ -17,7 +17,7 @@ function timingSafeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const cookieVal = request.cookies.get('admin_auth')?.value ?? '';
   const secret = process.env.ADMIN_AUTH_SECRET ?? '';
